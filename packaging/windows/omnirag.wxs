@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- OmniRAG Enterprise Dynamic RAG Backend MSI Installer Definition -->
+  <Product Id="*"
+           Name="OmniRAG Enterprise Backend"
+           Language="1033"
+           Version="1.0.0.0"
+           Manufacturer="OmniRAG Technologies Inc."
+           UpgradeCode="4C65D982-8C4E-401A-B472-3E1882C785F2">
+
+    <Package InstallerVersion="300"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Description="OmniRAG Dynamic Multi-Tenant Enterprise RAG Backend"
+             Comments="Includes Go Connector Engine, Python RAG Core, and Minimalistic Web UI" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of OmniRAG is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Directory Layout -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="OmniRAG">
+          <Directory Id="BINDIR" Name="bin" />
+          <Directory Id="PYTHONDIR" Name="python-rag" />
+          <Directory Id="WEBDIR" Name="web-ui" />
+          <Directory Id="CONFIGDIR" Name="config" />
+        </Directory>
+      </Directory>
+
+      <!-- ProgramData for configuration storage -->
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="OmniRAGDataFolder" Name="OmniRAG" />
+      </Directory>
+
+      <!-- Start Menu Shortcuts -->
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="OmniRAG Enterprise" />
+      </Directory>
+    </Directory>
+
+    <!-- Components -->
+    <ComponentGroup Id="ProductComponents">
+      <!-- Go Connector Engine Binary -->
+      <Component Id="GoEngineExe" Directory="BINDIR" Guid="A78E3F21-3948-4B29-87D4-7389A0E418C2" Win64="yes">
+        <File Id="GoEngineBinary" Source="..\..\go-engine\go-engine.exe" KeyPath="yes" />
+      </Component>
+
+      <!-- Service Launcher & Config Script -->
+      <Component Id="ServiceScripts" Directory="BINDIR" Guid="B89F4032-4A59-4C3A-98E5-8490B1F529D3" Win64="yes">
+        <File Id="ServiceBat" Source="omnirag-service.bat" KeyPath="yes" />
+        <File Id="ConfigManagerPy" Source="..\config_manager\omnirag_config.py" />
+        <File Id="PostInstallPs1" Source="post_install.ps1" />
+      </Component>
+
+      <!-- Default Configuration in ProgramData -->
+      <Component Id="DefaultConfigFile" Directory="OmniRAGDataFolder" Guid="C9A05143-5B6A-4D4B-A9F6-95A1C2E63AE4" Permanent="yes">
+        <File Id="OmniRAGEnvFile" Source="..\..\.env.example" Name="omnirag.env" KeyPath="yes" />
+      </Component>
+
+      <!-- Environment Variables -->
+      <Component Id="EnvVariables" Directory="INSTALLFOLDER" Guid="D0B16254-6C7B-4E5C-BA07-A6B2D3F74BF5" Win64="yes">
+        <Environment Id="PATH" Name="PATH" Value="[BINDIR]" Permanent="no" Part="last" Action="set" System="yes" />
+        <Environment Id="OMNIRAG_CONFIG" Name="OMNIRAG_CONFIG" Value="[CommonAppDataFolder]OmniRAG\omnirag.env" Permanent="no" Action="set" System="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Start Menu Shortcuts -->
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="ApplicationShortcuts" Guid="E1C27365-7D8C-4F6D-CB18-B7C3E4F85CF6">
+        <Shortcut Id="StartOmniRAGShortcut"
+                  Name="Launch OmniRAG Console"
+                  Description="Start OmniRAG Dynamic RAG Backend and Open Web UI"
+                  Target="[BINDIR]omnirag-service.bat"
+                  WorkingDirectory="BINDIR" />
+        <Shortcut Id="ConfigureOmniRAGShortcut"
+                  Name="Configure Credentials &amp; Connectors"
+                  Description="Interactive CLI to configure API keys and cloud storage connectors"
+                  Target="python.exe"
+                  Arguments="&quot;[BINDIR]omnirag_config.py&quot;"
+                  WorkingDirectory="BINDIR" />
+        <RemoveFolder Id="CleanUpShortcuts" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\OmniRAG\Enterprise" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <!-- Features -->
+    <Feature Id="MainFeature" Title="OmniRAG Backend Core" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentRef Id="ApplicationShortcuts" />
+    </Feature>
+
+    <!-- Post-Install Action: Prompt configuration -->
+    <CustomAction Id="LaunchPostInstallConfig"
+                  Directory="BINDIR"
+                  ExeCommand="powershell.exe -ExecutionPolicy Bypass -File &quot;[BINDIR]post_install.ps1&quot;"
+                  Execute="immediate"
+                  Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="LaunchPostInstallConfig" After="InstallFinalize">NOT Installed</Custom>
+    </InstallExecuteSequence>
+
+  </Product>
+</Wix>

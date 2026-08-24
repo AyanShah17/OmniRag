@@ -1,0 +1,46 @@
+# Environments & Dependencies
+.venv/
+venv/
+ENV/
+node_modules/
+dist/
+build/
+output/
+
+# Binaries & Packaging artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.msi
+*.wixobj
+*.rpm
+*.zip
+*.tar.gz
+*.iso
+
+# Python cache & test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases & logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.err
+
+# Environment files
+.env
+omnirag.env
+!*.env.example
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

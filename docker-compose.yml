@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: omnirag-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: omnirag_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: omnirag-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  go-engine:
+    build:
+      context: ./go-engine
+      dockerfile: Dockerfile
+    container_name: omnirag-go-engine
+    ports:
+      - "8080:8080"
+    environment:
+      - GO_ENGINE_PORT=8080
+      - GO_DATABASE_URL=postgres://postgres:postgres@postgres:5432/omnirag_db?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHON_RAG_URL=http://python-rag:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  python-rag:
+    build:
+      context: ./python-rag
+      dockerfile: Dockerfile
+    container_name: omnirag-python-rag
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHON_RAG_PORT=8000
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/omnirag_db
+      - REDIS_URL=redis://redis:6379/0
+      - VECTOR_STORE_PROVIDER=pinecone
+      - EMBEDDING_PROVIDER=fastembed
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
