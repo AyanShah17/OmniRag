@@ -143,3 +143,63 @@ async def test_internal_embed_chunks_bridge():
         assert resp.status_code == 200
         assert resp.json()["status"] == "success"
         assert resp.json()["chunks_embedded"] == 1
+
+
+@pytest.mark.asyncio
+async def test_clerk_auth_and_session():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/v1/auth/me", headers={"X-Workspace-ID": "ws_enterprise_test"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["workspace_id"] == "ws_enterprise_test"
+        assert "user_id" in data
+
+
+@pytest.mark.asyncio
+async def test_document_deletion_lifecycle():
+    await init_database()
+    test_file_name = f"delete_test_{uuid.uuid4().hex[:6]}.md"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Upload
+        files = {"file": (test_file_name, io.BytesIO(b"# Deletion Test\n\nContent to be purged."), "text/markdown")}
+        headers = {"X-Workspace-ID": "ws_default"}
+        up_resp = await client.post("/api/v1/documents/upload", files=files, headers=headers)
+        assert up_resp.status_code == 200
+        doc_id = up_resp.json()["document_id"]
+
+        # Delete
+        del_resp = await client.delete(f"/api/v1/documents/{doc_id}", headers=headers)
+        assert del_resp.status_code == 200
+        del_data = del_resp.json()
+        assert del_data["status"] == "success"
+        assert del_data["document_id"] == doc_id
+        assert del_data["chunks_deleted"] >= 1
+
+        # Verify not found
+        get_resp = await client.get("/api/v1/documents", headers=headers)
+        assert get_resp.status_code == 200
+        docs = get_resp.json()
+        assert not any(d["id"] == doc_id for d in docs)
+
+
+@pytest.mark.asyncio
+async def test_settings_and_security_api():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        headers = {"X-Workspace-ID": "ws_default"}
+        # 1. Get settings
+        get_res = await client.get("/api/v1/settings", headers=headers)
+        assert get_res.status_code == 200
+        settings_data = get_res.json()
+        assert "embedding_provider" in settings_data
+        assert "llm_provider" in settings_data
+
+        # 2. Update settings
+        update_req = {
+            "embedding_provider": "fastembed",
+            "llm_provider": "groq",
+            "vector_store_provider": "mock",
+        }
+        post_res = await client.post("/api/v1/settings", json=update_req, headers=headers)
+        assert post_res.status_code == 200
+        assert post_res.json()["status"] == "success"
+        assert post_res.json()["active_embedding_provider"] == "fastembed"

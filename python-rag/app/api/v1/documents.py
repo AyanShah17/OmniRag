@@ -231,3 +231,58 @@ async def get_document_versions(
     if not versions:
         raise HTTPException(status_code=404, detail="Document versions not found")
     return versions
+
+
+@router.delete("/{document_id}")
+async def delete_document(
+    document_id: str,
+    workspace_id: str = Depends(get_current_workspace_id),
+    db: AsyncSession = Depends(get_db),
+):
+    res = await db.execute(
+        select(Document)
+        .where(Document.id == document_id)
+        .where(Document.workspace_id == workspace_id)
+    )
+    doc = res.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found in current workspace")
+
+    # 1. Fetch all versions of this document
+    v_res = await db.execute(select(DocumentVersion).where(DocumentVersion.document_id == document_id))
+    versions = v_res.scalars().all()
+    version_ids = [v.id for v in versions]
+
+    # 2. Fetch chunks belonging to this document
+    c_res = await db.execute(select(Chunk).where(Chunk.document_id == document_id))
+    chunks = c_res.scalars().all()
+    chunk_ids = [c.id for c in chunks]
+
+    # 3. Purge vectors from Vector Store (Pinecone)
+    if chunk_ids:
+        try:
+            from app.vectorstore.factory import get_vector_store
+            vector_store = get_vector_store()
+            namespace = f"ws_{workspace_id}"
+            await vector_store.delete_vectors(namespace, chunk_ids)
+        except Exception:
+            pass
+
+    # 4. Delete version mappings & records from Database
+    if version_ids:
+        await db.execute(version_chunks.delete().where(version_chunks.c.version_id.in_(version_ids)))
+        for v in versions:
+            await db.delete(v)
+
+    for c in chunks:
+        await db.delete(c)
+
+    await db.delete(doc)
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Document '{doc.file_name}' and {len(chunk_ids)} chunk(s) purged from database and vector store.",
+        "document_id": document_id,
+        "chunks_deleted": len(chunk_ids),
+    }

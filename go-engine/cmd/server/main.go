@@ -30,10 +30,25 @@ func main() {
 	log.Println("  OmniRAG Go Connector & Crawling Engine v1.0.0          ")
 	log.Println("=========================================================")
 
-	// 1. Initialize DB Store
-	store := database.NewMemoryStore()
+	// 1. Initialize DB Store (Postgres / Supabase / NeonDB with fallback to MemoryStore)
+	var store database.Store
+	databaseURL := os.Getenv("DATABASE_URL")
 
-	// Seed default tenant & workspace
+	if databaseURL != "" {
+		pgStore, err := database.NewPostgresStore(databaseURL)
+		if err != nil {
+			log.Printf("[DB] Warning: Failed to connect to PostgreSQL (%v). Falling back to MemoryStore.", err)
+			store = database.NewMemoryStore()
+		} else {
+			log.Println("[DB] Connected to PostgreSQL Store (Supabase / NeonDB)")
+			store = pgStore
+		}
+	} else {
+		log.Println("[DB] Using In-Memory Store (Set DATABASE_URL for persistent Supabase/NeonDB)")
+		store = database.NewMemoryStore()
+	}
+
+	// Seed default tenant & workspace if in-memory
 	ctx := context.Background()
 	_ = store.CreateTenant(ctx, &database.Tenant{
 		ID:   "tenant_default",

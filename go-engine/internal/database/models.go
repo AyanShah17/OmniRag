@@ -28,6 +28,7 @@ type Connector struct {
 	SyncFrequency string                 `json:"sync_frequency"` // "realtime", "hourly", "daily", "manual"
 	LastSyncedAt  *time.Time             `json:"last_synced_at,omitempty"`
 	CreatedAt     time.Time              `json:"created_at"`
+	UpdatedAt     time.Time              `json:"updated_at"`
 }
 
 type SyncJob struct {
