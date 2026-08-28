@@ -1,18 +1,17 @@
 # Branching Workflow
 
-`dev` is the active development branch. New implementation work, fixes, and
-tests start there.
+`dev` is the continuous development branch. Errors, mistakes, fixes, refactors,
+and new features are developed there.
 
-`pre-prod` is the integration and release-candidate branch. Promote changes
-from `dev` with a pull request after the full test suite and frontend build
-pass.
+`pre-prod` contains the latest candidate from `dev` while it is being reviewed
+and tested for functionality, regressions, and release readiness.
 
-`prod` contains production-ready code. Promote only validated changes from
-`pre-prod` with a pull request and deployment approval.
+`prod` contains the latest verified working prototype. Promote changes from
+`pre-prod` only after review and functional verification are complete.
 
 `main` is retained as the repository baseline and should not receive direct
-development commits. Keep it aligned with the approved production baseline
-when the repository owner chooses to update it.
+development commits. Keep it aligned with the verified `prod` baseline when
+the repository owner chooses to update it.
 
 ## Promotion Flow
 
@@ -22,9 +21,10 @@ feature work -> dev -> pre-prod -> prod
 
 Before each promotion:
 
-1. Run Python tests, Go tests, `go vet`, and the frontend build.
-2. Review the diff and confirm no secrets or generated artifacts are included.
-3. Merge through a pull request into the next branch.
-4. Deploy only from `prod`.
+1. Merge continuous work from `dev` into `pre-prod` for review.
+2. Run Python tests, Go tests, `go vet`, and the frontend build on `pre-prod`.
+3. Review functionality, regressions, secrets, and generated artifacts.
+4. Promote the verified candidate from `pre-prod` into `prod`.
+5. Keep `prod` as the known working prototype while new work continues in `dev`.
 
 The working branch for ongoing agent development is `dev`.
