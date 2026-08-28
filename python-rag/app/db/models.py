@@ -12,6 +12,8 @@ from sqlalchemy import (
     Text,
     JSON,
     Table,
+    UniqueConstraint,
+    CheckConstraint,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -59,6 +61,7 @@ class Workspace(Base):
     connectors = relationship("Connector", back_populates="workspace", cascade="all, delete-orphan")
     documents = relationship("Document", back_populates="workspace", cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="workspace", cascade="all, delete-orphan")
+    memberships = relationship("WorkspaceMembership", back_populates="workspace", cascade="all, delete-orphan")
 
 
 class User(Base):
@@ -70,6 +73,33 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     role = Column(String(50), default="member")  # admin, member, viewer
     created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    memberships = relationship("WorkspaceMembership", back_populates="user", cascade="all, delete-orphan")
+
+
+class WorkspaceMembership(Base):
+    """Explicit grant of a user's access to a workspace. This is the source of
+    truth for tenant/workspace authorization checks (see app.core.authorization) —
+    a caller presenting a valid identity for tenant A must never be able to read
+    or write workspace data belonging to tenant B just by supplying a different
+    X-Workspace-ID, and this table is what prevents that IDOR class of bug.
+    """
+
+    __tablename__ = "workspace_memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "workspace_id", name="uq_membership_user_workspace"),
+        CheckConstraint("role IN ('owner', 'admin', 'member', 'viewer')", name="ck_membership_role"),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(String(36), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String(50), default="member")  # owner, admin, member, viewer
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    user = relationship("User", back_populates="memberships")
+    workspace = relationship("Workspace", back_populates="memberships")
 
 
 class Connector(Base):
@@ -84,6 +114,7 @@ class Connector(Base):
     sync_frequency = Column(String(50), default="hourly")  # realtime, hourly, daily, manual
     last_synced_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     workspace = relationship("Workspace", back_populates="connectors")
     documents = relationship("Document", back_populates="connector", cascade="all, delete-orphan")
@@ -91,6 +122,13 @@ class Connector(Base):
 
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "external_id", name="uq_document_workspace_external"),
+        CheckConstraint(
+            "status IN ('indexing', 'synced', 'error', 'deleting')",
+            name="ck_document_status",
+        ),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
@@ -113,6 +151,7 @@ class Document(Base):
 
 class DocumentVersion(Base):
     __tablename__ = "document_versions"
+    __table_args__ = (UniqueConstraint("document_id", "version_number", name="uq_document_version_number"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
@@ -127,6 +166,7 @@ class DocumentVersion(Base):
 
 class Chunk(Base):
     __tablename__ = "chunks"
+    __table_args__ = (UniqueConstraint("document_id", "chunk_hash", name="uq_document_chunk_hash"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
@@ -158,6 +198,9 @@ class Conversation(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant', 'system')", name="ck_message_role"),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     conversation_id = Column(String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False)
@@ -168,3 +211,52 @@ class Message(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     conversation = relationship("Conversation", back_populates="messages")
+
+
+class SyncJob(Base):
+    __tablename__ = "sync_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'completed', 'failed')",
+            name="ck_sync_job_status",
+        ),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    connector_id = Column(String(36), ForeignKey("connectors.id", ondelete="CASCADE"), nullable=False)
+    trigger_type = Column(String(64), nullable=False)
+    status = Column(String(32), default="running")
+    total_docs = Column(Integer, default=0)
+    modified_docs = Column(Integer, default=0)
+    embedded_chunks = Column(Integer, default=0)
+    skipped_chunks = Column(Integer, default=0)
+    error_log = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), default=utc_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class AuditEvent(Base):
+    """Immutable record of security-relevant actions: auth failures, document
+    access, deletions, settings changes, and authorization denials. This is
+    the trail an operator would need to answer "who did what, when, from
+    where" after an incident — see app.core.audit for the writer helpers.
+    Audit rows are append-only from the application's perspective; nothing in
+    this codebase updates or deletes them.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("status IN ('success', 'denied', 'error')", name="ck_audit_status"),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    tenant_id = Column(String(36), nullable=True)
+    workspace_id = Column(String(36), nullable=True)
+    user_id = Column(String(36), nullable=True)
+    action = Column(String(100), nullable=False)  # e.g. document.delete, auth.failed, settings.update
+    resource_type = Column(String(50), nullable=True)  # e.g. document, conversation, settings
+    resource_id = Column(String(36), nullable=True)
+    status = Column(String(20), default="success")  # success, denied, error
+    ip_address = Column(String(64), nullable=True)
+    detail = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), default=utc_now)

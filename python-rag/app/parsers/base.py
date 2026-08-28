@@ -1,13 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ParsedSection(BaseModel):
     text: str
     page_number: Optional[int] = None
     heading: Optional[str] = None
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ParsedDocument(BaseModel):
@@ -15,7 +15,7 @@ class ParsedDocument(BaseModel):
     file_type: str
     full_text: str
     sections: List[ParsedSection]
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     page_count: int = 1
 
 

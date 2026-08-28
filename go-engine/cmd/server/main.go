@@ -14,8 +14,8 @@ import (
 	"github.com/omnirag/go-engine/internal/api"
 	"github.com/omnirag/go-engine/internal/config"
 	"github.com/omnirag/go-engine/internal/database"
-	"github.com/omnirag/go-engine/internal/diff"
-	"github.com/omnirag/go-engine/internal/queue"
+	"github.com/omnirag/go-engine/internal/ingestion"
+	"github.com/omnirag/go-engine/internal/middleware"
 	"github.com/omnirag/go-engine/internal/scheduler"
 )
 
@@ -25,6 +25,9 @@ func main() {
 	_ = godotenv.Load(".env")
 
 	cfg := config.LoadConfig()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("[Config] Invalid configuration: %v", err)
+	}
 
 	log.Println("=========================================================")
 	log.Println("  OmniRAG Go Connector & Crawling Engine v1.0.0          ")
@@ -32,19 +35,25 @@ func main() {
 
 	// 1. Initialize DB Store (Postgres / Supabase / NeonDB with fallback to MemoryStore)
 	var store database.Store
-	databaseURL := os.Getenv("DATABASE_URL")
+	databaseURL := cfg.DatabaseURL
 
 	if databaseURL != "" {
 		pgStore, err := database.NewPostgresStore(databaseURL)
 		if err != nil {
-			log.Printf("[DB] Warning: Failed to connect to PostgreSQL (%v). Falling back to MemoryStore.", err)
+			if cfg.AuthMode == "production" {
+				log.Fatalf("[DB] PostgreSQL is required in production: %v", err)
+			}
+			log.Printf("[DB] PostgreSQL unavailable (%v); using development MemoryStore", err)
 			store = database.NewMemoryStore()
 		} else {
 			log.Println("[DB] Connected to PostgreSQL Store (Supabase / NeonDB)")
 			store = pgStore
 		}
 	} else {
-		log.Println("[DB] Using In-Memory Store (Set DATABASE_URL for persistent Supabase/NeonDB)")
+		if cfg.AuthMode == "production" {
+			log.Fatal("[DB] GO_DATABASE_URL is required in production")
+		}
+		log.Println("[DB] Using development MemoryStore (set GO_DATABASE_URL for persistence)")
 		store = database.NewMemoryStore()
 	}
 
@@ -61,24 +70,35 @@ func main() {
 		Name:     "Main Knowledge Base",
 	})
 
-	// 2. Initialize Chunk Differ & Queue Producer
-	differ := diff.NewDiffer(store)
-	producer := queue.NewProducer(cfg.RedisURL, cfg.PythonRAGURL, cfg.UseInMemoryQueue)
+	// 2. Initialize Python ingestion client
+	ingestionClient := ingestion.NewPythonClient(cfg.PythonRAGURL, cfg.InternalServiceSecret)
 
 	// 3. Initialize Ingestion Orchestrator & Offline Background Scheduler
-	orchestrator := scheduler.NewSyncOrchestrator(store, differ, producer, cfg.DefaultSyncPeriod)
+	orchestrator := scheduler.NewSyncOrchestrator(store, ingestionClient, cfg.DefaultSyncPeriod)
 	orchestrator.StartScheduler()
 	defer orchestrator.Stop()
 
 	// 4. Initialize HTTP API & Router
-	handler := api.NewAPIHandler(store, orchestrator, differ)
-	router := api.NewRouter(handler)
+	handler := api.NewAPIHandler(store, orchestrator)
+	authCfg := middleware.AuthConfig{
+		Mode:    cfg.AuthMode,
+		JWKSURL: cfg.ClerkJWKSURL,
+		Issuer:  cfg.ClerkIssuer,
+		ExemptPaths: []string{
+			"/healthz",
+			"/api/v1/healthz",
+		},
+	}
+	router := api.NewRouter(handler, authCfg, cfg.CORSOrigins)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),
 		Handler:      router,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// 5. Graceful shutdown handler

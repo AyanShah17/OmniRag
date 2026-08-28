@@ -1,29 +1,34 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
+	"strings"
 
+	"github.com/google/uuid"
 	"github.com/omnirag/go-engine/internal/connectors"
 	"github.com/omnirag/go-engine/internal/database"
-	"github.com/omnirag/go-engine/internal/diff"
-	"github.com/omnirag/go-engine/internal/scheduler"
+	"github.com/omnirag/go-engine/internal/middleware"
+	"github.com/omnirag/go-engine/internal/security"
 )
 
 type APIHandler struct {
-	store        database.Store
-	orchestrator *scheduler.SyncOrchestrator
-	differ       *diff.Differ
+	store        database.ConnectorStore
+	orchestrator SyncRunner
 }
 
-func NewAPIHandler(store database.Store, orchestrator *scheduler.SyncOrchestrator, differ *diff.Differ) *APIHandler {
+const maxJSONBodyBytes = 1 << 20
+
+type SyncRunner interface {
+	SyncConnector(ctx context.Context, connectorID string, triggerType string) (*database.SyncJob, error)
+}
+
+func NewAPIHandler(store database.ConnectorStore, orchestrator SyncRunner) *APIHandler {
 	return &APIHandler{
 		store:        store,
 		orchestrator: orchestrator,
-		differ:       differ,
 	}
 }
 
@@ -38,6 +43,47 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
+func (h *APIHandler) authorizeWorkspace(w http.ResponseWriter, r *http.Request, requested string) (string, bool) {
+	identityWorkspace, ok := middleware.WorkspaceIDFromContext(r.Context())
+	if !ok || identityWorkspace == "" {
+		writeError(w, http.StatusForbidden, "No workspace is associated with this identity")
+		return "", false
+	}
+	if requested == "" {
+		requested = identityWorkspace
+	}
+	if requested != identityWorkspace {
+		writeError(w, http.StatusForbidden, "Not authorized for this workspace")
+		return "", false
+	}
+
+	workspace, err := h.store.GetWorkspace(r.Context(), requested)
+	if err != nil || workspace == nil {
+		writeError(w, http.StatusNotFound, "Workspace not found")
+		return "", false
+	}
+	identityTenant, ok := middleware.TenantIDFromContext(r.Context())
+	if !ok || identityTenant == "" || workspace.TenantID != identityTenant {
+		writeError(w, http.StatusForbidden, "Not authorized for this workspace")
+		return "", false
+	}
+	return requested, true
+}
+
+func requirePrivilegedRole(w http.ResponseWriter, r *http.Request) bool {
+	roles, ok := middleware.RolesFromContext(r.Context())
+	if ok {
+		for _, role := range roles {
+			normalized := strings.ToLower(role)
+			if normalized == "owner" || normalized == "admin" || normalized == "org:admin" {
+				return true
+			}
+		}
+	}
+	writeError(w, http.StatusForbidden, "This action requires an owner or admin role")
+	return false
+}
+
 // GET /healthz
 func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -49,6 +95,10 @@ func (h *APIHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/connectors
 func (h *APIHandler) CreateConnector(w http.ResponseWriter, r *http.Request) {
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var conn database.Connector
 	if err := json.NewDecoder(r.Body).Decode(&conn); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
@@ -59,6 +109,11 @@ func (h *APIHandler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "type, name, and workspace_id are required")
 		return
 	}
+	workspaceID, ok := h.authorizeWorkspace(w, r, conn.WorkspaceID)
+	if !ok {
+		return
+	}
+	conn.WorkspaceID = workspaceID
 
 	// Validate config with connector adapter
 	adapter, err := connectors.CreateConnector(conn.Type, conn.Name, conn.Config)
@@ -73,31 +128,55 @@ func (h *APIHandler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn.IsActive = true
+	if conn.ID == "" {
+		conn.ID = uuid.New().String()
+	}
 	if conn.SyncFrequency == "" {
 		conn.SyncFrequency = "hourly"
 	}
+	encryptedConfig, err := security.EncryptConfig(conn.Config)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Connector credentials could not be encrypted")
+		return
+	}
+	conn.Config = encryptedConfig
 
 	if err := h.store.CreateConnector(r.Context(), &conn); err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to persist connector")
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, conn)
+	response := conn
+	response.Config = security.MaskConfig(conn.Config)
+	writeJSON(w, http.StatusCreated, response)
 }
 
 // GET /api/v1/connectors?workspace_id=...
 func (h *APIHandler) ListConnectors(w http.ResponseWriter, r *http.Request) {
-	workspaceID := r.URL.Query().Get("workspace_id")
+	workspaceID, ok := h.authorizeWorkspace(w, r, r.URL.Query().Get("workspace_id"))
+	if !ok {
+		return
+	}
 	list, err := h.store.ListConnectors(r.Context(), workspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to list connectors")
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	masked := make([]*database.Connector, 0, len(list))
+	for _, connector := range list {
+		response := *connector
+		response.Config = security.MaskConfig(connector.Config)
+		masked = append(masked, &response)
+	}
+	writeJSON(w, http.StatusOK, masked)
 }
 
 // POST /api/v1/connectors/test
 func (h *APIHandler) TestConnector(w http.ResponseWriter, r *http.Request) {
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	var payload struct {
 		Type   string                 `json:"type"`
 		Name   string                 `json:"name"`
@@ -135,118 +214,21 @@ func (h *APIHandler) TestConnector(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/connectors/{id}/sync
 func (h *APIHandler) TriggerSync(w http.ResponseWriter, r *http.Request, connectorID string) {
+	if !requirePrivilegedRole(w, r) {
+		return
+	}
+	connector, err := h.store.GetConnector(r.Context(), connectorID)
+	if err != nil || connector == nil {
+		writeError(w, http.StatusNotFound, "Connector not found")
+		return
+	}
+	if _, ok := h.authorizeWorkspace(w, r, connector.WorkspaceID); !ok {
+		return
+	}
 	job, err := h.orchestrator.SyncConnector(r.Context(), connectorID, "online_manual")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Sync failed: %v", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
-}
-
-// POST /api/v1/ingest/file
-func (h *APIHandler) DirectFileUpload(w http.ResponseWriter, r *http.Request) {
-	// Support multipart form upload or JSON base64
-	if err := r.ParseMultipartForm(32 << 20); err == nil {
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "file parameter is required")
-			return
-		}
-		defer file.Close()
-
-		workspaceID := r.FormValue("workspace_id")
-		connectorID := r.FormValue("connector_id")
-		if workspaceID == "" {
-			workspaceID = "default"
-		}
-
-		data, err := io.ReadAll(file)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "Failed to read file content")
-			return
-		}
-
-		diffRes, err := h.orchestrator.IngestRawFile(r.Context(), workspaceID, connectorID, header.Filename, data, map[string]interface{}{
-			"source":    "direct_upload",
-			"file_size": len(data),
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("Ingest failed: %v", err))
-			return
-		}
-
-		writeJSON(w, http.StatusOK, diffRes)
-		return
-	}
-
-	// JSON payload fallback
-	var req struct {
-		WorkspaceID string `json:"workspace_id"`
-		ConnectorID string `json:"connector_id"`
-		FileName    string `json:"file_name"`
-		Content     string `json:"content"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
-		return
-	}
-
-	diffRes, err := h.orchestrator.IngestRawFile(r.Context(), req.WorkspaceID, req.ConnectorID, req.FileName, []byte(req.Content), map[string]interface{}{
-		"source": "api_json",
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Ingest failed: %v", err))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, diffRes)
-}
-
-// POST /api/v1/webhooks/s3
-func (h *APIHandler) S3Webhook(w http.ResponseWriter, r *http.Request) {
-	var s3Event struct {
-		Records []struct {
-			S3 struct {
-				Bucket struct {
-					Name string `json:"name"`
-				} `json:"bucket"`
-				Object struct {
-					Key  string `json:"key"`
-					Size int64  `json:"size"`
-					ETag string `json:"eTag"`
-				} `json:"object"`
-			} `json:"s3"`
-		} `json:"Records"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&s3Event); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid S3 event notification")
-		return
-	}
-
-	log.Printf("[Webhook] Received S3 event with %d records", len(s3Event.Records))
-	for _, rec := range s3Event.Records {
-		log.Printf("[Webhook] S3 Object created/modified: bucket=%s, key=%s", rec.S3.Bucket.Name, rec.S3.Object.Key)
-		// Trigger online immediate sync for connector matching bucket
-	}
-
-	writeJSON(w, http.StatusOK, map[string]string{"status": "received"})
-}
-
-// POST /api/v1/webhooks/confluence
-func (h *APIHandler) ConfluenceWebhook(w http.ResponseWriter, r *http.Request) {
-	var event struct {
-		Event string `json:"event"`
-		Page  struct {
-			ID    string `json:"id"`
-			Title string `json:"title"`
-		} `json:"page"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid Confluence webhook")
-		return
-	}
-
-	log.Printf("[Webhook] Confluence event: %s on page: %s (%s)", event.Event, event.Page.Title, event.Page.ID)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "received"})
 }

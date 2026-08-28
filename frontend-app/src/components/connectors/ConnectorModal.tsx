@@ -30,8 +30,8 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
   const [name, setName] = useState("Corporate S3 Bucket")
   const [bucket, setBucket] = useState("my-company-knowledge-base")
   const [prefix, setPrefix] = useState("documents/")
-  const [accessKey, setAccessKey] = useState("AKIAIOSFODNN7EXAMPLE")
-  const [secretKey, setSecretKey] = useState("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+  const [accessKey, setAccessKey] = useState("")
+  const [secretKey, setSecretKey] = useState("")
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: "success" | "error" } | null>(null)
   const [isTesting, setIsTesting] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -58,12 +58,7 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
     setIsTesting(true)
     setStatusMessage(null)
     try {
-      await goApi.testConnector(activeTab, name, {
-        bucket,
-        prefix,
-        access_key_id: accessKey,
-        secret_access_key: secretKey,
-      })
+      await goApi.testConnector(workspaceId, activeTab, name, buildConfig())
       setStatusMessage({ text: "Connection test succeeded! Bucket is accessible and permissions are valid.", type: "success" })
     } catch (err: any) {
       setStatusMessage({ text: err.message || "Failed to connect to storage provider", type: "error" })
@@ -82,12 +77,7 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
         workspace_id: workspaceId,
         type: activeTab,
         name,
-        config: {
-          bucket,
-          prefix,
-          access_key_id: accessKey,
-          secret_access_key: secretKey,
-        },
+        config: buildConfig(),
         sync_frequency: "hourly",
       })
       onConnectorSaved()
@@ -97,6 +87,19 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
     } finally {
       setIsSaving(false)
     }
+  }
+
+  const buildConfig = () => {
+    if (activeTab === "azure") {
+      return { container_name: bucket, prefix, account_name: accessKey, account_key: secretKey }
+    }
+    if (activeTab === "supabase") {
+      return { bucket_name: bucket, prefix, supabase_url: accessKey, service_role_key: secretKey }
+    }
+    if (activeTab === "confluence") {
+      return { space_key: bucket, email: prefix, domain: accessKey, api_token: secretKey }
+    }
+    return { bucket, prefix, access_key_id: accessKey, secret_access_key: secretKey }
   }
 
   return (
@@ -134,7 +137,7 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
 
             <div className="space-y-1">
               <label className="text-xs font-medium text-foreground">
-                {activeTab === "confluence" ? "Space Key / Site" : "Bucket / Container Name"}
+                {activeTab === "confluence" ? "Space Key" : "Bucket / Container Name"}
               </label>
               <Input
                 value={bucket}
@@ -146,18 +149,22 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
             </div>
 
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">Prefix / Directory Filter</label>
+              <label className="text-xs font-medium text-foreground">
+                {activeTab === "confluence" ? "Account Email" : "Prefix / Directory Filter"}
+              </label>
               <Input
                 value={prefix}
                 onChange={(e) => setPrefix(e.target.value)}
-                placeholder="documents/"
+                placeholder={activeTab === "confluence" ? "admin@company.com" : "documents/"}
                 className="h-8 text-xs font-mono"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-foreground">Access Key / Account</label>
+                <label className="text-xs font-medium text-foreground">
+                  {activeTab === "confluence" ? "Confluence URL" : activeTab === "supabase" ? "Project URL" : "Access Key / Account"}
+                </label>
                 <Input
                   value={accessKey}
                   onChange={(e) => setAccessKey(e.target.value)}
@@ -165,7 +172,9 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-foreground">Secret Access Key</label>
+                <label className="text-xs font-medium text-foreground">
+                  {activeTab === "confluence" ? "API Token" : activeTab === "supabase" ? "Service Role Key" : "Secret Access Key"}
+                </label>
                 <Input
                   type="password"
                   value={secretKey}

@@ -24,10 +24,14 @@ def get_vector_store() -> BaseVectorStore:
             )
             return _instance
         except Exception as e:
+            if settings.is_production_auth:
+                raise RuntimeError("Pinecone initialization failed") from e
             logger.warning(f"Failed to initialize Pinecone ({e}). Falling back to Mock Vector Store.")
             _instance = MockVectorStore()
             return _instance
     else:
+        if settings.is_production_auth and provider != "mock":
+            raise RuntimeError(f"Vector store provider '{provider}' is not configured correctly")
         logger.info("Using Mock Vector Store (In-memory cosine similarity)")
         _instance = MockVectorStore()
         return _instance

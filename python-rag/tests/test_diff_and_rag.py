@@ -4,8 +4,7 @@ import os
 import sys
 import pytest
 
-# Add python-rag to sys.path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../python-rag")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.parsers.extractor import extractor
 from app.chunking.chunker import chunker, RecursiveTokenChunker, compute_sha256

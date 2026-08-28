@@ -1,12 +1,10 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.init_db import init_database
 from app.api.v1.router import api_v1_router
-from app.workers.embedding_worker import embedding_worker
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -17,6 +15,7 @@ logger = logging.getLogger("omnirag.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.validate_security()
     logger.info("=========================================================")
     logger.info("  OmniRAG Python AI & Vector Core v1.0.0                 ")
     logger.info(f"  Embedding Provider: {settings.EMBEDDING_PROVIDER}     ")
@@ -27,13 +26,9 @@ async def lifespan(app: FastAPI):
     # Initialize Database Schema & Seed Data
     await init_database()
 
-    # Launch background queue worker
-    worker_task = asyncio.create_task(embedding_worker.start_redis_consumer())
-
     yield
 
     logger.info("Shutting down Python RAG Core...")
-    worker_task.cancel()
 
 
 app = FastAPI(
@@ -46,11 +41,27 @@ app = FastAPI(
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; connect-src 'self' http://127.0.0.1:8080 http://localhost:8080"
+    )
+    if settings.is_production_auth:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 app.include_router(api_v1_router)
 

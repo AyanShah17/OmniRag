@@ -49,7 +49,7 @@ export const DocumentExplorerModal: React.FC<DocumentExplorerModalProps> = ({
   const selectDoc = async (id: string) => {
     setSelectedDocId(id)
     try {
-      const v = await pyApi.getDocumentVersions(id)
+      const v = await pyApi.getDocumentVersions(id, workspaceId)
       setVersions(v)
     } catch {
       setVersions([])

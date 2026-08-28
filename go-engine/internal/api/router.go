@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/omnirag/go-engine/internal/middleware"
 )
 
-func NewRouter(handler *APIHandler) http.Handler {
+func NewRouter(handler *APIHandler, authCfg middleware.AuthConfig, allowedOrigins []string) http.Handler {
 	mux := http.NewServeMux()
 
 	// Health
@@ -45,34 +47,11 @@ func NewRouter(handler *APIHandler) http.Handler {
 		http.Error(w, "Not found", http.StatusNotFound)
 	})
 
-	// Ingestion
-	mux.HandleFunc("/api/v1/ingest/file", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			handler.DirectFileUpload(w, r)
-		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	// Webhooks
-	mux.HandleFunc("/api/v1/webhooks/s3", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			handler.S3Webhook(w, r)
-		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	mux.HandleFunc("/api/v1/webhooks/confluence", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			handler.ConfluenceWebhook(w, r)
-		} else {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	// Wrap with Middleware: Logging, Recovery & CORS
-	return corsMiddleware(loggingMiddleware(mux))
+	// Wrap with Middleware: Logging, CORS & (strict-in-production) Clerk Auth.
+	// Auth runs innermost-but-one so every handler sees a resolved identity in
+	// the request context before CORS/logging finish wrapping the response.
+	authed := middleware.ClerkAuthMiddleware(authCfg)(mux)
+	return securityHeadersMiddleware(corsMiddleware(loggingMiddleware(authed), allowedOrigins))
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
@@ -83,9 +62,17 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		allowed[strings.TrimSpace(origin)] = struct{}{}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if _, ok := allowed[origin]; ok && origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Workspace-ID")
 
@@ -94,6 +81,15 @@ func corsMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		next.ServeHTTP(w, r)
+	})
+}
+
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
 }

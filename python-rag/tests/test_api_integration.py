@@ -5,7 +5,7 @@ import uuid
 import pytest
 from httpx import AsyncClient, ASGITransport
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../python-rag")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.main import app
 from app.db.init_db import init_database
@@ -115,34 +115,6 @@ async def test_chat_streaming_api():
         assert "token" in body
         assert "done" in body
         print("\n[Chat SSE Stream] Received events successfully with citations and tokens!")
-
-
-@pytest.mark.asyncio
-async def test_internal_embed_chunks_bridge():
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        payload = {
-            "job_id": "job_123",
-            "workspace_id": "ws_default",
-            "document_id": "doc_bridge_test",
-            "version_id": "v1",
-            "namespace": "ws_ws_default",
-            "file_name": "manual.txt",
-            "source_uri": "s3://bucket/manual.txt",
-            "chunks": [
-                {
-                    "id": "chunk_bridge_1",
-                    "chunk_index": 0,
-                    "chunk_hash": "hash_123",
-                    "text_content": "OmniRAG provides distributed multi-tenant RAG scaling.",
-                    "metadata": {"page": 1},
-                }
-            ],
-        }
-
-        resp = await client.post("/api/v1/internal/embed-chunks", json=payload)
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "success"
-        assert resp.json()["chunks_embedded"] == 1
 
 
 @pytest.mark.asyncio

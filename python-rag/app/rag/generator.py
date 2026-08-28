@@ -39,34 +39,64 @@ class LLMGenerator:
         }
         yield f"data: {json.dumps(citation_payload)}\n\n"
 
-        if self.provider == "openrouter" and settings.OPENROUTER_API_KEY:
-            async for token in self._stream_openrouter(system_prompt, chat_history):
+        provider_config = self._provider_config()
+        if provider_config:
+            url, api_key, model, extra_headers = provider_config
+            async for token in self._stream_openai_compatible(
+                url, api_key, model, extra_headers, system_prompt, chat_history
+            ):
                 yield f"data: {json.dumps({'event': 'token', 'data': token})}\n\n"
-        elif self.provider == "groq" and settings.GROQ_API_KEY:
-            async for token in self._stream_groq(system_prompt, chat_history):
-                yield f"data: {json.dumps({'event': 'token', 'data': token})}\n\n"
-        elif self.provider == "openai" and settings.OPENAI_API_KEY:
-            async for token in self._stream_openai(system_prompt, chat_history):
-                yield f"data: {json.dumps({'event': 'token', 'data': token})}\n\n"
-        else:
+        elif self.provider == "mock" or not settings.is_production_auth:
             # High-fidelity Mock/Local generator for instant local zero-cost verification
             async for token in self._stream_mock(system_prompt, chat_history, citations):
                 yield f"data: {json.dumps({'event': 'token', 'data': token})}\n\n"
+        else:
+            raise RuntimeError(f"LLM provider '{self.provider}' is not configured correctly")
 
         # Final event: emit completion marker
         yield f"data: {json.dumps({'event': 'done'})}\n\n"
 
-    async def _stream_openrouter(self, system_prompt: str, chat_history: List[Dict[str, str]]) -> AsyncGenerator[str, None]:
-        url = "https://openrouter.ai/api/v1/chat/completions"
+    def _provider_config(self):
+        providers = {
+            "openrouter": (
+                "https://openrouter.ai/api/v1/chat/completions",
+                settings.OPENROUTER_API_KEY,
+                settings.OPENROUTER_MODEL,
+                {"HTTP-Referer": "https://omnirag.ai", "X-Title": "OmniRAG"},
+            ),
+            "groq": (
+                "https://api.groq.com/openai/v1/chat/completions",
+                settings.GROQ_API_KEY,
+                settings.GROQ_MODEL,
+                {},
+            ),
+            "openai": (
+                "https://api.openai.com/v1/chat/completions",
+                settings.OPENAI_API_KEY,
+                settings.OPENAI_MODEL,
+                {},
+            ),
+        }
+        config = providers.get(self.provider)
+        return config if config and config[1] else None
+
+    async def _stream_openai_compatible(
+        self,
+        url: str,
+        api_key: str,
+        model: str,
+        extra_headers: Dict[str, str],
+        system_prompt: str,
+        chat_history: List[Dict[str, str]],
+    ) -> AsyncGenerator[str, None]:
         headers = {
-            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://omnirag.ai",
-            "X-Title": "OmniRAG",
+            **extra_headers,
         }
         messages = [{"role": "system", "content": system_prompt}] + chat_history
         payload = {
-            "model": settings.OPENROUTER_MODEL,
+            "model": model,
             "messages": messages,
             "stream": True,
             "temperature": 0.2,
@@ -74,6 +104,7 @@ class LLMGenerator:
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if line.startswith("data: "):
                         data_str = line[6:].strip()
@@ -84,65 +115,7 @@ class LLMGenerator:
                             delta = data["choices"][0]["delta"].get("content", "")
                             if delta:
                                 yield delta
-                        except Exception:
-                            continue
-
-    async def _stream_groq(self, system_prompt: str, chat_history: List[Dict[str, str]]) -> AsyncGenerator[str, None]:
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {settings.GROQ_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        messages = [{"role": "system", "content": system_prompt}] + chat_history
-        payload = {
-            "model": settings.GROQ_MODEL,
-            "messages": messages,
-            "stream": True,
-            "temperature": 0.2,
-        }
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream("POST", url, json=payload, headers=headers) as resp:
-                async for line in resp.aiter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            delta = data["choices"][0]["delta"].get("content", "")
-                            if delta:
-                                yield delta
-                        except Exception:
-                            continue
-
-    async def _stream_openai(self, system_prompt: str, chat_history: List[Dict[str, str]]) -> AsyncGenerator[str, None]:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        messages = [{"role": "system", "content": system_prompt}] + chat_history
-        payload = {
-            "model": settings.OPENAI_MODEL,
-            "messages": messages,
-            "stream": True,
-            "temperature": 0.2,
-        }
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream("POST", url, json=payload, headers=headers) as resp:
-                async for line in resp.aiter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            delta = data["choices"][0]["delta"].get("content", "")
-                            if delta:
-                                yield delta
-                        except Exception:
+                        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                             continue
 
     async def _stream_mock(

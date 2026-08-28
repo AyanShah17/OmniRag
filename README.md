@@ -11,41 +11,24 @@
 
 Built with a **hybrid Go + Python architecture**, OmniRAG connects directly to **AWS S3, Azure Blob, Supabase Storage, and Confluence Wiki**, scanning permissible directories and synchronizing documents at **near-zero cost** by diffing content at the SHA-256 chunk level.
 
+See [docs/architecture.md](docs/architecture.md) for the ownership boundaries, SOLID decisions, ACID transaction model, and CIA controls.
+
 ---
 
 ## 🏛️ System Architecture Topology
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                          MINIMALISTIC SHADCN UI FRONTEND (React + Vite)                         │
-│         - ChatGPT-style token typewriter stream   - Interactive Grounded Citation Drawer        │
-│         - Real-time Chunk Diffing Modal ($0 cost) - Multi-Cloud Connector Management Modal      │
-│         - Dual-Backend Live Health Monitors       - Dynamic AI & Key Settings Control Panel     │
-└───────────────────────────────┬─────────────────────────────────┬───────────────────────────────┘
-                                │                                 │
-                 REST / SSE Stream (/api/py)       Cloud Ingestion & Sync (/api/go)
-                                ▼                                 ▼
-┌───────────────────────────────────────────────┐ ┌───────────────────────────────────────────────┐
-│        PYTHON AI & RAG CORE (FastAPI)         │ │         GO CONNECTOR ENGINE (Golang)          │
-│ - Streaming Chat Completion (SSE)             │ │ - High-Concurrency Cloud Crawlers:            │
-│ - Dynamic Context Retrieval & HyDE            │ │   * AWS S3, Azure Blob, Supabase, Confluence  │
-│ - Re-ranking (FlashRank / Cross-Encoder)      │ │ - Chunk-Level Hash Diffing Engine             │
-│ - Embedding Provider Aggregator:              │ │ - Online Webhook Triggers & Direct Uploads    │
-│   * FastEmbed (ONNX $0 cost), OpenRouter, Groq│ │ - Offline Scheduled Sync Workers              │
-│ - Multi-format Document Parsers (PDF/DOCX/MD) │ │ - Zero-Cost Version Chunk Re-linker           │
-└───────────────────────┬───────────────────────┘ └───────────────────────┬───────────────────────┘
-                        │                                                 │
-                        ├────────────────────────┬────────────────────────┤
-                        │                        │                        │
-                        ▼                        ▼                        ▼
-┌───────────────────────────────┐ ┌──────────────────────────────┐ ┌──────────────────────────────┐
-│       POSTGRESQL / SUPABASE   │ │    REDIS / UPSTASH QUEUE     │ │      PINECONE SERVERLESS     │
-│ - Multi-Tenant Metadata       │ │ - Task Queues:               │ │ - Namespaced by Tenant/WS    │
-│ - Documents, Versions, Chunks │ │   * rag:embedding:jobs       │ │ - Metadata Filters:          │
-│ - Workspace ACL & Permissions │ │   * rag:sync:jobs            │ │   * doc_id, version_id,      │
-│ - Version-Chunk Mappings      │ │ - Distributed Pub/Sub        │ │   * chunk_hash, acl_roles    │
-└───────────────────────────────┘ └──────────────────────────────┘ └──────────────────────────────┘
+React UI ── REST/SSE ──> Python RAG Core ──> PostgreSQL + Vector Store
+    │                         ▲
+    └── connector control ──> Go Connector Engine
+                                  │
+                                  └── fetched source bytes ──┘
 ```
+
+Python is the single owner of parsing, chunking, versioning, schema initialization,
+and vector indexing. Go owns connector credentials, cloud discovery, scheduling, and
+transport; it sends fetched source content to Python through an authenticated internal
+endpoint. This keeps one canonical chunk/hash policy across uploads and connector syncs.
 
 ---
 
@@ -58,7 +41,7 @@ When a 100-page policy or document is updated by 1 sentence, legacy RAG systems 
 - In-memory set diffing yields **60% to 95% cost reductions** on enterprise repositories.
 
 ### 2. 🌐 Multi-Cloud Knowledge Connectors (Go Engine)
-- **AWS S3**: High-throughput prefix scanning with AWS Signature v4 and S3 event webhooks.
+- **AWS S3**: High-throughput prefix scanning with AWS Signature v4.
 - **Azure Blob Storage**: Shared key authenticated container enumeration.
 - **Supabase Storage**: Authenticated REST API listing and signed URL downloads.
 - **Confluence Cloud**: CQL-driven space hierarchy scanning and storage-format parsing.
@@ -69,8 +52,8 @@ When a 100-page policy or document is updated by 1 sentence, legacy RAG systems 
 - **Grounded Source Cards**: Streams Server-Sent Events (SSE) tokens directly with interactive citation cards showing exact document title, section heading, page number, and text snippet.
 
 ### 4. 🎛️ Live AI & Key Configuration Control
-- Switch dynamically between **FastEmbed ONNX** ($0 local cost), **OpenRouter**, **Groq**, and **OpenAI**.
-- Update API keys and toggle cloud connectors on the fly via the **CLI Wizard** (`omnirag-config`) or the **Web Settings Modal** without restarting services.
+- Configure **FastEmbed ONNX** ($0 local cost), **OpenRouter**, **Groq**, and **OpenAI**.
+- Update API keys and provider settings via the **CLI Wizard** (`omnirag-config`) or the **Web Settings Modal**; restart the Python service to apply changes.
 
 ### 5. 📦 Native Windows (MSI) & Linux (RPM) Packaging
 - **Windows**: WiX installer definition (`.msi`) and portable bundle with automated background launcher.
@@ -127,16 +110,16 @@ python ../scripts/demo_e2e_rag.py
 
 ### Step 4: Run Complete Stack (Backend & Web UI)
 
-#### Terminal 1 — Go Connector Engine (Port 8080)
-```bash
-cd go-engine
-go run cmd/server/main.go
-```
-
-#### Terminal 2 — Python RAG Core & Auto-Served Web UI (Port 8000)
+#### Terminal 1 — Python RAG Core & Auto-Served Web UI (Port 8000)
 ```bash
 cd python-rag
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+#### Terminal 2 — Go Connector Engine (Port 8080)
+```bash
+cd go-engine
+go run cmd/server/main.go
 ```
 
 #### Terminal 3 (Optional) — Frontend Vite Dev Server (Port 3000)
@@ -147,13 +130,6 @@ npm run dev
 ```
 
 Open **`http://localhost:8000`** in your browser to access the ChatGPT-style interface!
-
----
-
-### Step 5: Docker Compose (Alternative Zero-Setup)
-```bash
-docker-compose up --build
-```
 
 ---
 
@@ -179,17 +155,14 @@ Run complete test suites across both Go and Python engines:
 
 ### Python RAG & API Integration Tests
 ```bash
-.\python-rag\.venv\Scripts\python.exe -m pytest -v -o asyncio_mode=auto .\tests\
-============================== 7 passed in 6.87s ==============================
+.\python-rag\.venv\Scripts\python.exe -m pytest -v -o asyncio_mode=auto .\python-rag\tests\
+============================== 22 passed ==============================
 ```
 
-### Go Chunk Differ Unit Tests
+### Go Connector, Authorization, and Security Tests
 ```bash
 cd go-engine
 go test -v ./...
-=== RUN   TestChunkDiffingZeroCostReuse
-    differ_test.go:68: PASS: Go Chunk Differ successfully reused 2/3 chunks (Zero-cost reuse: 66.7%)
---- PASS: TestChunkDiffingZeroCostReuse (0.00s)
 PASS
 ```
 
@@ -203,7 +176,8 @@ PASS
 | `POST` | `/api/v1/documents/upload` | Python Core | Multipart document upload with chunk-level diffing |
 | `GET` | `/api/v1/documents` | Python Core | List all indexed documents in workspace |
 | `GET` | `/api/v1/documents/{id}/versions` | Python Core | Fetch historical document versions |
-| `POST` | `/api/v1/chat/conversations` | Python Core | Create or list conversation sessions |
+| `POST` | `/api/v1/chat/conversations` | Python Core | Create a conversation session |
+| `GET` | `/api/v1/chat/conversations` | Python Core | List the current user's conversations |
 | `POST` | `/api/v1/chat/completions/stream` | Python Core | Real-time SSE token stream with citations |
 | `GET` | `/api/v1/settings` | Python Core | Get active system providers and masked keys |
 | `POST` | `/api/v1/settings` | Python Core | Dynamically update AI providers and credentials |

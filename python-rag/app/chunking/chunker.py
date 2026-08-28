@@ -1,7 +1,7 @@
 import hashlib
 import re
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.parsers.base import ParsedDocument
 
 
@@ -10,7 +10,7 @@ class ChunkData(BaseModel):
     text_content: str
     token_count: int
     chunk_hash: str
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 def compute_sha256(text: str) -> str:

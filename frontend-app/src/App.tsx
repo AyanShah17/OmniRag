@@ -17,7 +17,7 @@ import {
 } from "@/lib/api"
 
 export function App() {
-  const [workspaceId] = useState("ws_demo_enterprise")
+  const [workspaceId] = useState("ws_default")
   const [conversations, setConversations] = useState<ConversationItem[]>([])
   const [currentConvId, setCurrentConvId] = useState<string | null>(null)
   const [messages, setMessages] = useState<MessageItem[]>([])
@@ -75,14 +75,31 @@ export function App() {
     setMessages([])
   }
 
-  const handleSelectConversation = (id: string) => {
+  const handleSelectConversation = async (id: string) => {
     setCurrentConvId(id)
-    // Clear or load specific history
-    setMessages([])
+    try {
+      const stored = await pyApi.getConversationMessages(id, workspaceId)
+      setMessages(stored.map((message) => ({
+        role: message.role,
+        content: message.content,
+        citations: message.citations,
+      })))
+    } catch {
+      setMessages([])
+    }
   }
 
   const handleSendMessage = async (text: string) => {
     if (isStreaming) return
+
+    let conversationId = currentConvId
+    if (!conversationId) {
+      const title = text.trim().slice(0, 60) || "New Chat"
+      const conversation = await pyApi.createConversation(title, workspaceId)
+      conversationId = conversation.id
+      setCurrentConvId(conversationId)
+      await loadConversations()
+    }
 
     // 1. Add User Message
     const userMsg: MessageItem = { role: "user", content: text }
@@ -110,6 +127,7 @@ export function App() {
     pyApi.streamChat(
       historyForApi,
       workspaceId,
+      conversationId,
       (token) => {
         accumulatedContent += token
         setMessages((prev) => {

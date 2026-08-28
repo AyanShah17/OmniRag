@@ -2,13 +2,13 @@ package connectors
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/omnirag/go-engine/internal/diff"
 )
 
 type LocalConnector struct {
@@ -77,7 +77,7 @@ func (l *LocalConnector) ListObjects(ctx context.Context, prefix string) ([]*Sto
 		if err != nil {
 			return nil
 		}
-		fileHash := diff.ComputeFileHash(data)
+		fileHash := computeFileHash(data)
 
 		objects = append(objects, &StorageObject{
 			Key:          relPath,
@@ -112,7 +112,7 @@ func (l *LocalConnector) FetchObject(ctx context.Context, key string) ([]byte, *
 		return nil, nil, fmt.Errorf("failed to stat local file %s: %w", fullPath, err)
 	}
 
-	etag := diff.ComputeFileHash(data)
+	etag := computeFileHash(data)
 
 	obj := &StorageObject{
 		Key:          strings.ReplaceAll(key, "\\", "/"),
@@ -127,4 +127,9 @@ func (l *LocalConnector) FetchObject(ctx context.Context, key string) ([]byte, *
 	}
 
 	return data, obj, nil
+}
+
+func computeFileHash(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
 }

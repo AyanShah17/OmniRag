@@ -1,18 +1,18 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class VectorRecord(BaseModel):
     id: str
     values: List[float]
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class VectorSearchResult(BaseModel):
     id: str
     score: float
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BaseVectorStore(ABC):

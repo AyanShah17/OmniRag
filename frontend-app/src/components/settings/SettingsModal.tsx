@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Sliders, Key, Cpu, Database, CheckCircle2, AlertCircle } from "lucide-react"
+import { apiHeaders } from "@/lib/api"
 
 interface SettingsModalProps {
   open: boolean
@@ -45,7 +46,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const loadSettings = async () => {
     try {
       const res = await fetch("/api/v1/settings", {
-        headers: { "X-Workspace-ID": workspaceId },
+        headers: apiHeaders(workspaceId),
       })
       if (res.ok) {
         const data = await res.json()
@@ -72,10 +73,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       const res = await fetch("/api/v1/settings", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Workspace-ID": workspaceId,
-        },
+        headers: apiHeaders(workspaceId, true),
         body: JSON.stringify({
           embedding_provider: embeddingProvider,
           llm_provider: llmProvider,
@@ -92,7 +90,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         throw new Error(`Failed to save: ${res.status}`)
       }
 
-      setStatusMsg({ text: "Settings and credentials updated successfully!", type: "success" })
+      const result = await res.json()
+      setStatusMsg({ text: result.message || "Settings saved. Restart the service to apply them.", type: "success" })
       if (onSettingsSaved) onSettingsSaved()
       setTimeout(() => {
         onClose()
@@ -113,7 +112,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <DialogTitle className="text-base font-semibold">Backend AI & Credentials Control</DialogTitle>
           </div>
           <DialogDescription className="text-xs text-muted-foreground">
-            Configure dynamic models, embedding engines, and API keys. Changes take effect immediately.
+            Configure models, embedding engines, and API keys for the next service start.
           </DialogDescription>
         </DialogHeader>
 
@@ -132,7 +131,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 <option value="fastembed">FastEmbed ONNX ($0 Local)</option>
                 <option value="openrouter">OpenRouter API</option>
-                <option value="openai">OpenAI Embedding</option>
                 <option value="mock">Mock Embeddings</option>
               </select>
             </div>

@@ -3,6 +3,16 @@
 const isViteDev = typeof window !== "undefined" && window.location.port === "3000"
 const PY_BASE = isViteDev ? "/api/py" : "/api/v1"
 const GO_BASE = isViteDev ? "/api/go" : "http://localhost:8080/api/v1"
+const DEFAULT_WORKSPACE_ID = "ws_default"
+
+export function apiHeaders(workspaceId?: string, includeJson = false): HeadersInit {
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers["X-Workspace-ID"] = workspaceId
+  if (includeJson) headers["Content-Type"] = "application/json"
+  const token = typeof window !== "undefined" ? window.localStorage.getItem("omnirag_access_token") : null
+  if (token) headers.Authorization = `Bearer ${token}`
+  return headers
+}
 
 export interface Citation {
   index: number
@@ -69,6 +79,14 @@ export interface ConversationItem {
   created_at?: string
 }
 
+export interface StoredMessageItem {
+  id: string
+  role: "user" | "assistant" | "system"
+  content: string
+  citations?: Citation[]
+  created_at?: string
+}
+
 // --------------------------------------------------------------------------
 // Python RAG Service API
 // --------------------------------------------------------------------------
@@ -82,15 +100,13 @@ export const pyApi = {
     }
   },
 
-  async uploadDocument(file: File, workspaceId = "ws_demo_enterprise"): Promise<DiffResult> {
+  async uploadDocument(file: File, workspaceId = DEFAULT_WORKSPACE_ID): Promise<DiffResult> {
     const formData = new FormData()
     formData.append("file", file)
 
     const res = await fetch(`${PY_BASE}/documents/upload`, {
       method: "POST",
-      headers: {
-        "X-Workspace-ID": workspaceId,
-      },
+      headers: apiHeaders(workspaceId),
       body: formData,
     })
     if (!res.ok) {
@@ -100,43 +116,54 @@ export const pyApi = {
     return await res.json()
   },
 
-  async listDocuments(workspaceId = "ws_demo_enterprise"): Promise<DocumentItem[]> {
+  async listDocuments(workspaceId = DEFAULT_WORKSPACE_ID): Promise<DocumentItem[]> {
     const res = await fetch(`${PY_BASE}/documents`, {
-      headers: { "X-Workspace-ID": workspaceId },
+      headers: apiHeaders(workspaceId),
     })
     if (!res.ok) return []
     return await res.json()
   },
 
-  async getDocumentVersions(docId: string): Promise<DocumentVersionItem[]> {
-    const res = await fetch(`${PY_BASE}/documents/${docId}/versions`)
+  async getDocumentVersions(docId: string, workspaceId = DEFAULT_WORKSPACE_ID): Promise<DocumentVersionItem[]> {
+    const res = await fetch(`${PY_BASE}/documents/${docId}/versions`, {
+      headers: apiHeaders(workspaceId),
+    })
     if (!res.ok) return []
     return await res.json()
   },
 
-  async createConversation(title = "New Chat", workspaceId = "ws_demo_enterprise"): Promise<ConversationItem> {
+  async createConversation(title = "New Chat", workspaceId = DEFAULT_WORKSPACE_ID): Promise<ConversationItem> {
     const res = await fetch(`${PY_BASE}/chat/conversations`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Workspace-ID": workspaceId,
-      },
+      headers: apiHeaders(workspaceId, true),
       body: JSON.stringify({ title }),
     })
     return await res.json()
   },
 
-  async listConversations(workspaceId = "ws_demo_enterprise"): Promise<ConversationItem[]> {
+  async listConversations(workspaceId = DEFAULT_WORKSPACE_ID): Promise<ConversationItem[]> {
     const res = await fetch(`${PY_BASE}/chat/conversations`, {
-      headers: { "X-Workspace-ID": workspaceId },
+      headers: apiHeaders(workspaceId),
     })
     if (!res.ok) return []
     return await res.json()
   },
 
+  async getConversationMessages(
+    conversationId: string,
+    workspaceId = DEFAULT_WORKSPACE_ID
+  ): Promise<StoredMessageItem[]> {
+    const res = await fetch(`${PY_BASE}/chat/conversations/${conversationId}/messages`, {
+      headers: apiHeaders(workspaceId),
+    })
+    if (!res.ok) throw new Error(`Unable to load conversation: ${res.status}`)
+    return await res.json()
+  },
+
   streamChat(
     messages: { role: string; content: string }[],
-    workspaceId = "ws_demo_enterprise",
+    workspaceId = DEFAULT_WORKSPACE_ID,
+    conversationId: string | null,
     onToken: (token: string) => void,
     onCitations: (citations: Citation[]) => void,
     onDone: () => void,
@@ -146,11 +173,9 @@ export const pyApi = {
 
     fetch(`${PY_BASE}/chat/completions/stream`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Workspace-ID": workspaceId,
-      },
+      headers: apiHeaders(workspaceId, true),
       body: JSON.stringify({
+        conversation_id: conversationId,
         messages,
         top_k: 8,
         rerank_top_n: 4,
@@ -165,13 +190,15 @@ export const pyApi = {
         if (!reader) throw new Error("Response body is not readable")
 
         const decoder = new TextDecoder("utf-8")
+        let eventBuffer = ""
 
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
 
-          const chunk = decoder.decode(value, { stream: true })
-          const lines = chunk.split("\n\n")
+          eventBuffer += decoder.decode(value, { stream: true })
+          const lines = eventBuffer.split("\n\n")
+          eventBuffer = lines.pop() || ""
 
           for (const line of lines) {
             if (!line.startsWith("data: ")) continue
@@ -218,9 +245,11 @@ export const goApi = {
     }
   },
 
-  async listConnectors(workspaceId = "ws_demo_enterprise"): Promise<ConnectorItem[]> {
+  async listConnectors(workspaceId = DEFAULT_WORKSPACE_ID): Promise<ConnectorItem[]> {
     try {
-      const res = await fetch(`${GO_BASE}/connectors?workspace_id=${workspaceId}`)
+      const res = await fetch(`${GO_BASE}/connectors?workspace_id=${encodeURIComponent(workspaceId)}`, {
+        headers: apiHeaders(workspaceId),
+      })
       if (!res.ok) return []
       return await res.json()
     } catch {
@@ -231,7 +260,7 @@ export const goApi = {
   async createConnector(conn: ConnectorItem): Promise<ConnectorItem> {
     const res = await fetch(`${GO_BASE}/connectors`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders(conn.workspace_id, true),
       body: JSON.stringify(conn),
     })
     if (!res.ok) {
@@ -241,10 +270,10 @@ export const goApi = {
     return await res.json()
   },
 
-  async testConnector(type: string, name: string, config: Record<string, any>) {
+  async testConnector(workspaceId: string, type: string, name: string, config: Record<string, any>) {
     const res = await fetch(`${GO_BASE}/connectors/test`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders(workspaceId, true),
       body: JSON.stringify({ type, name, config }),
     })
     if (!res.ok) {

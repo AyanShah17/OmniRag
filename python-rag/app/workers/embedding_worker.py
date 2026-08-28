@@ -1,11 +1,9 @@
-import asyncio
-import json
 import logging
+from dataclasses import dataclass
 from typing import Dict, Any, List
 from sqlalchemy.future import select
-from app.core.config import settings
 from app.db.session import async_session_factory
-from app.db.models import Chunk
+from app.db.models import Chunk, Document
 from app.embeddings.factory import get_embedding_provider
 from app.vectorstore.factory import get_vector_store
 from app.vectorstore.base import VectorRecord
@@ -13,13 +11,24 @@ from app.vectorstore.base import VectorRecord
 logger = logging.getLogger("omnirag.workers.embedding")
 
 
+@dataclass(frozen=True)
+class IndexingResult:
+    namespace: str
+    vector_ids: List[str]
+    upserted_count: int
+
+
 class EmbeddingWorker:
     def __init__(self):
         self.embedding_provider = get_embedding_provider()
         self.vector_store = get_vector_store()
 
-    async def process_job_payload(self, job_data: Dict[str, Any]) -> int:
-        """Processes an embedding job received via Redis queue or direct HTTP webhook."""
+    async def index_payload(self, job_data: Dict[str, Any]) -> IndexingResult:
+        """Create vectors without mutating relational state.
+
+        Keeping the external vector write separate lets the caller coordinate it
+        with its database transaction and compensate if the commit fails.
+        """
         workspace_id = job_data.get("workspace_id", "ws_default")
         document_id = job_data.get("document_id", "")
         version_id = job_data.get("version_id", "")
@@ -28,9 +37,17 @@ class EmbeddingWorker:
         source_uri = job_data.get("source_uri", "")
         chunks = job_data.get("chunks", [])
 
+        # Job-level ACL roles apply to every chunk in this job unless a chunk
+        # carries its own acl_roles override in its metadata. Chunks with no
+        # ACL information anywhere default to ["default"] — the least-privileged
+        # role — rather than being left unrestricted, so retrieval-time ACL
+        # filtering (see app.rag.retriever) can never be silently bypassed by
+        # omitting ACL data at ingest time.
+        job_acl_roles = job_data.get("acl_roles") or ["default"]
+
         if not chunks:
             logger.info(f"No chunks to embed for doc {document_id}")
-            return 0
+            return IndexingResult(namespace=namespace, vector_ids=[], upserted_count=0)
 
         logger.info(f"Embedding {len(chunks)} chunks for document '{file_name}' (Version: {version_id})...")
 
@@ -44,7 +61,8 @@ class EmbeddingWorker:
             cid = c.get("id", f"{document_id}_{idx}")
             chunk_ids.append(cid)
             meta = c.get("metadata", {}) or {}
-            
+            chunk_acl_roles = meta.get("acl_roles") or job_acl_roles
+
             vector_records.append(
                 VectorRecord(
                     id=cid,
@@ -59,49 +77,69 @@ class EmbeddingWorker:
                         "page": meta.get("page"),
                         "heading": meta.get("heading"),
                         "text_content": c.get("text_content", ""),
+                        "acl_roles": chunk_acl_roles,
                     },
                 )
             )
 
-        # Upsert vectors to Pinecone/Vector Store in namespace
-        upserted_count = await self.vector_store.upsert_vectors(namespace, vector_records)
+        try:
+            upserted_count = await self.vector_store.upsert_vectors(namespace, vector_records)
+        except Exception:
+            # Some remote stores may apply a prefix of a batch before failing.
+            # Deleting the deterministic IDs is idempotent compensation.
+            try:
+                await self.vector_store.delete_vectors(namespace, chunk_ids)
+            except Exception:
+                logger.exception("Failed to compensate a partial vector upsert")
+            raise
+        if upserted_count != len(vector_records):
+            await self.vector_store.delete_vectors(namespace, chunk_ids)
+            raise RuntimeError(
+                f"Vector store accepted {upserted_count} of {len(vector_records)} records"
+            )
 
-        # Mark chunks as embedded in PostgreSQL / DB
-        async with async_session_factory() as session:
-            result = await session.execute(select(Chunk).where(Chunk.id.in_(chunk_ids)))
-            db_chunks = result.scalars().all()
-            for dc in db_chunks:
-                dc.is_embedded = True
-            await session.commit()
+        return IndexingResult(
+            namespace=namespace,
+            vector_ids=chunk_ids,
+            upserted_count=upserted_count,
+        )
 
-        logger.info(f"Successfully vectorized and stored {upserted_count} chunks in namespace '{namespace}'")
-        return upserted_count
+    async def compensate(self, result: IndexingResult) -> None:
+        if result.vector_ids:
+            await self.vector_store.delete_vectors(result.namespace, result.vector_ids)
 
-    async def start_redis_consumer(self):
-        """Background worker consuming from Redis task queue."""
-        if settings.USE_IN_MEMORY_QUEUE or not settings.REDIS_URL:
-            logger.info("Running in direct/in-memory queue mode. Redis background worker bypassed.")
-            return
+    async def process_job_payload(self, job_data: Dict[str, Any]) -> int:
+        """Index a bridge payload and atomically update its relational state."""
+        document_id = job_data.get("document_id", "")
+        result = await self.index_payload(job_data)
 
         try:
-            import redis.asyncio as aioredis
-            r = aioredis.from_url(settings.REDIS_URL)
-            logger.info("Connected to Redis. Listening for embedding jobs on 'rag:embedding:jobs'...")
+            async with async_session_factory() as session:
+                async with session.begin():
+                    chunks_result = await session.execute(
+                        select(Chunk).where(Chunk.id.in_(result.vector_ids))
+                    )
+                    db_chunks = chunks_result.scalars().all()
+                    if len(db_chunks) != len(result.vector_ids):
+                        raise RuntimeError("Relational chunks disappeared during indexing")
+                    for db_chunk in db_chunks:
+                        db_chunk.is_embedded = True
+                    document = await session.get(Document, document_id)
+                    if document is None:
+                        raise RuntimeError("Document disappeared during indexing")
+                    document.status = "synced"
+        except Exception:
+            try:
+                await self.compensate(result)
+            except Exception:
+                logger.exception("Failed to compensate vectors after database failure")
+            raise
 
-            while True:
-                try:
-                    item = await r.brpop("rag:embedding:jobs", timeout=5)
-                    if item:
-                        _, raw_data = item
-                        job = json.loads(raw_data)
-                        await self.process_job_payload(job)
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error(f"Error in Redis consumer loop: {e}")
-                    await asyncio.sleep(2)
-        except Exception as e:
-            logger.warning(f"Could not connect Redis consumer: {e}")
-
+        logger.info(
+            "Successfully vectorized and stored %d chunks in namespace '%s'",
+            result.upserted_count,
+            result.namespace,
+        )
+        return result.upserted_count
 
 embedding_worker = EmbeddingWorker()

@@ -1,184 +1,90 @@
-import hashlib
-import uuid
+from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
+
+from app.api.v1.auth import UserSession, get_current_user
+from app.api.v1.dependencies import limit_write_requests
+from app.core.audit import record_event
+from app.core.authorization import require_privileged_workspace_access, require_workspace_access
+from app.core.config import settings
+from app.db.models import Chunk, Document, DocumentVersion, version_chunks
 from app.db.session import get_db
-from app.db.models import Document, DocumentVersion, Chunk, version_chunks
-from app.parsers.extractor import extractor
-from app.chunking.chunker import chunker
-from app.workers.embedding_worker import embedding_worker
-from app.api.v1.auth import get_current_workspace_id
+from app.services.document_ingestion import DocumentIndexingError, document_ingestion_service
+from app.vectorstore.factory import get_vector_store
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
+async def _read_upload(file: UploadFile) -> bytes:
+    data = bytearray()
+    while chunk := await file.read(1024 * 1024):
+        data.extend(chunk)
+        if len(data) > settings.MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Uploaded file exceeds the configured size limit")
+    return bytes(data)
+
+
+async def ingest_document_bytes(
+    *,
+    file_bytes: bytes,
+    file_name: str,
+    content_type: str,
+    workspace_id: str,
+    db: AsyncSession,
+    external_id: Optional[str] = None,
+    connector_id: Optional[str] = None,
+    source_metadata: Optional[dict] = None,
+    acl_roles: Optional[List[str]] = None,
+):
+    return await document_ingestion_service.ingest(
+        file_bytes=file_bytes,
+        file_name=file_name,
+        content_type=content_type,
+        workspace_id=workspace_id,
+        db=db,
+        external_id=external_id,
+        connector_id=connector_id,
+        source_metadata=source_metadata,
+        acl_roles=acl_roles,
+    )
+
+
 @router.post("/upload")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
-    workspace_id: str = Depends(get_current_workspace_id),
+    user: UserSession = Depends(get_current_user),
+    _: None = Depends(limit_write_requests),
+    workspace_id: str = Depends(require_workspace_access),
     db: AsyncSession = Depends(get_db),
 ):
-    file_bytes = await file.read()
-    file_name = file.filename or "uploaded_file.txt"
-    file_size = len(file_bytes)
-    file_hash = hashlib.sha256(file_bytes).hexdigest()
-
-    # 1. Parse document structure (PDF, DOCX, MD, HTML, TXT)
-    parsed_doc = extractor.extract(file_bytes, file_name, file.content_type or "")
-
-    # 2. Chunk document with deterministic SHA-256 chunk hashes
-    doc_chunks = chunker.chunk_document(parsed_doc)
-
-    # 3. Check if document record already exists
-    external_id = f"direct/{file_name}"
-    res = await db.execute(
-        select(Document)
-        .where(Document.workspace_id == workspace_id)
-        .where(Document.external_id == external_id)
-    )
-    doc = res.scalar_one_or_none()
-
-    if not doc:
-        doc = Document(
-            id=str(uuid.uuid4()),
+    try:
+        result = await ingest_document_bytes(
+            file_bytes=await _read_upload(file),
+            file_name=file.filename or "uploaded_file.txt",
+            content_type=file.content_type or "",
             workspace_id=workspace_id,
-            connector_id=None,
-            external_id=external_id,
-            file_name=file_name,
-            file_type=parsed_doc.file_type,
-            file_size=file_size,
-            status="syncing",
-            metadata_json={"page_count": parsed_doc.page_count},
+            db=db,
         )
-        db.add(doc)
-        await db.flush()
+    except DocumentIndexingError as exc:
+        raise HTTPException(status_code=502, detail="Document ingestion was rolled back") from exc
 
-    # 4. Check latest version
-    ver_res = await db.execute(
-        select(DocumentVersion)
-        .where(DocumentVersion.document_id == doc.id)
-        .order_by(DocumentVersion.version_number.desc())
+    await record_event(
+        db,
+        "document.upload",
+        tenant_id=user.tenant_id,
+        workspace_id=workspace_id,
+        user_id=user.user_id,
+        resource_type="document",
+        resource_id=result["document_id"],
+        ip_address=request.client.host if request.client else None,
+        detail={"file_name": file.filename, "changed": result["changed"]},
     )
-    latest_ver = ver_res.scalars().first()
-
-    if latest_ver and latest_ver.file_hash == file_hash:
-        return {
-            "message": "Document unchanged. Identical version exists.",
-            "document_id": doc.id,
-            "version_id": latest_ver.id,
-            "version_number": latest_ver.version_number,
-            "total_chunks": latest_ver.total_chunks,
-            "reused_chunks_count": latest_ver.total_chunks,
-            "new_chunks_embedded": 0,
-            "savings_percent": "100%",
-        }
-
-    new_version_num = (latest_ver.version_number + 1) if latest_ver else 1
-
-    # 5. Fetch all known chunk hashes for this document (across all previous versions)
-    existing_chunks_res = await db.execute(select(Chunk).where(Chunk.document_id == doc.id))
-    existing_chunks_by_hash = {c.chunk_hash: c for c in existing_chunks_res.scalars().all()}
-
-    new_chunks_to_embed = []
-    version_chunk_ids = []
-    reused_count = 0
-
-    for c in doc_chunks:
-        if c.chunk_hash in existing_chunks_by_hash:
-            # ZERO-COST REUSE: Untouched chunk
-            existing_c = existing_chunks_by_hash[c.chunk_hash]
-            version_chunk_ids.append(existing_c.id)
-            reused_count += 1
-        else:
-            # NEW/MODIFIED CHUNK: Needs embedding
-            chunk_id = str(uuid.uuid4())
-            new_chunk = Chunk(
-                id=chunk_id,
-                document_id=doc.id,
-                chunk_hash=c.chunk_hash,
-                chunk_index=c.chunk_index,
-                text_content=c.text_content,
-                token_count=c.token_count,
-                metadata_json=c.metadata,
-                is_embedded=False,
-            )
-            db.add(new_chunk)
-            existing_chunks_by_hash[c.chunk_hash] = new_chunk
-            version_chunk_ids.append(chunk_id)
-            new_chunks_to_embed.append(
-                {
-                    "id": chunk_id,
-                    "chunk_index": c.chunk_index,
-                    "chunk_hash": c.chunk_hash,
-                    "text_content": c.text_content,
-                    "metadata": c.metadata,
-                }
-            )
-
-    await db.flush()
-
-    # 6. Create DocumentVersion record
-    version_id = str(uuid.uuid4())
-    doc_ver = DocumentVersion(
-        id=version_id,
-        document_id=doc.id,
-        version_number=new_version_num,
-        file_hash=file_hash,
-        total_chunks=len(doc_chunks),
-    )
-    db.add(doc_ver)
-    await db.flush()
-
-    # 7. Link version chunks
-    for idx, cid in enumerate(version_chunk_ids):
-        await db.execute(
-            version_chunks.insert().values(
-                version_id=version_id,
-                chunk_id=cid,
-                chunk_order=idx,
-            )
-        )
-
-    # 8. Update Document current version
-    doc.current_version_id = version_id
-    doc.status = "synced"
-    doc.file_size = file_size
-    await db.commit()
-
-    # 9. Vectorize only genuinely new/modified chunks!
-    if new_chunks_to_embed:
-        await embedding_worker.process_job_payload(
-            {
-                "workspace_id": workspace_id,
-                "document_id": doc.id,
-                "version_id": version_id,
-                "namespace": f"ws_{workspace_id}",
-                "file_name": file_name,
-                "source_uri": external_id,
-                "chunks": new_chunks_to_embed,
-            }
-        )
-
-    savings = (reused_count / len(doc_chunks) * 100) if doc_chunks else 0
-
-    return {
-        "status": "success",
-        "document_id": doc.id,
-        "version_id": version_id,
-        "version_number": new_version_num,
-        "file_name": file_name,
-        "total_chunks": len(doc_chunks),
-        "reused_chunks_count": reused_count,
-        "new_chunks_embedded": len(new_chunks_to_embed),
-        "cost_savings_percent": f"{savings:.1f}%",
-    }
-
-
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
+    return result
 
 
 class DocumentResponse(BaseModel):
@@ -209,25 +115,38 @@ class DocumentVersionResponse(BaseModel):
 
 @router.get("", response_model=List[DocumentResponse])
 async def list_documents(
-    workspace_id: str = Depends(get_current_workspace_id),
+    workspace_id: str = Depends(require_workspace_access),
     db: AsyncSession = Depends(get_db),
 ):
-    res = await db.execute(select(Document).where(Document.workspace_id == workspace_id))
-    docs = res.scalars().all()
-    return docs
+    result = await db.execute(
+        select(Document)
+        .where(Document.workspace_id == workspace_id)
+        .where(Document.status != "deleting")
+        .order_by(Document.updated_at.desc())
+    )
+    return result.scalars().all()
 
 
 @router.get("/{document_id}/versions", response_model=List[DocumentVersionResponse])
 async def get_document_versions(
     document_id: str,
+    workspace_id: str = Depends(require_workspace_access),
     db: AsyncSession = Depends(get_db),
 ):
-    res = await db.execute(
+    document = await db.scalar(
+        select(Document)
+        .where(Document.id == document_id)
+        .where(Document.workspace_id == workspace_id)
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found in current workspace")
+
+    result = await db.execute(
         select(DocumentVersion)
         .where(DocumentVersion.document_id == document_id)
         .order_by(DocumentVersion.version_number.asc())
     )
-    versions = res.scalars().all()
+    versions = result.scalars().all()
     if not versions:
         raise HTTPException(status_code=404, detail="Document versions not found")
     return versions
@@ -235,54 +154,69 @@ async def get_document_versions(
 
 @router.delete("/{document_id}")
 async def delete_document(
+    request: Request,
     document_id: str,
-    workspace_id: str = Depends(get_current_workspace_id),
+    user: UserSession = Depends(get_current_user),
+    _: None = Depends(limit_write_requests),
+    workspace_id: str = Depends(require_privileged_workspace_access),
     db: AsyncSession = Depends(get_db),
 ):
-    res = await db.execute(
+    document = await db.scalar(
         select(Document)
         .where(Document.id == document_id)
         .where(Document.workspace_id == workspace_id)
+        .with_for_update()
     )
-    doc = res.scalar_one_or_none()
-    if not doc:
+    if document is None:
         raise HTTPException(status_code=404, detail="Document not found in current workspace")
 
-    # 1. Fetch all versions of this document
-    v_res = await db.execute(select(DocumentVersion).where(DocumentVersion.document_id == document_id))
-    versions = v_res.scalars().all()
-    version_ids = [v.id for v in versions]
+    chunks = (
+        await db.execute(select(Chunk).where(Chunk.document_id == document_id))
+    ).scalars().all()
+    chunk_ids = [chunk.id for chunk in chunks]
 
-    # 2. Fetch chunks belonging to this document
-    c_res = await db.execute(select(Chunk).where(Chunk.document_id == document_id))
-    chunks = c_res.scalars().all()
-    chunk_ids = [c.id for c in chunks]
+    # This is a recoverable saga across the relational and vector stores. The
+    # durable marker prevents readers from seeing a half-deleted document.
+    document.status = "deleting"
+    await db.commit()
 
-    # 3. Purge vectors from Vector Store (Pinecone)
-    if chunk_ids:
-        try:
-            from app.vectorstore.factory import get_vector_store
-            vector_store = get_vector_store()
-            namespace = f"ws_{workspace_id}"
-            await vector_store.delete_vectors(namespace, chunk_ids)
-        except Exception:
-            pass
+    try:
+        if chunk_ids:
+            await get_vector_store().delete_vectors(f"ws_{workspace_id}", chunk_ids)
+    except Exception as exc:
+        document.status = "error"
+        await db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail="Vector deletion failed; database records were preserved",
+        ) from exc
 
-    # 4. Delete version mappings & records from Database
+    version_ids = list(
+        (
+            await db.execute(
+                select(DocumentVersion.id).where(DocumentVersion.document_id == document_id)
+            )
+        ).scalars().all()
+    )
     if version_ids:
         await db.execute(version_chunks.delete().where(version_chunks.c.version_id.in_(version_ids)))
-        for v in versions:
-            await db.delete(v)
-
-    for c in chunks:
-        await db.delete(c)
-
-    await db.delete(doc)
+    await db.delete(document)
+    await record_event(
+        db,
+        "document.delete",
+        tenant_id=user.tenant_id,
+        workspace_id=workspace_id,
+        user_id=user.user_id,
+        resource_type="document",
+        resource_id=document_id,
+        ip_address=request.client.host if request.client else None,
+        detail={"chunks_deleted": len(chunk_ids)},
+    )
     await db.commit()
 
     return {
         "status": "success",
-        "message": f"Document '{doc.file_name}' and {len(chunk_ids)} chunk(s) purged from database and vector store.",
+        "message": f"Document '{document.file_name}' and {len(chunk_ids)} chunk(s) were purged.",
         "document_id": document_id,
         "chunks_deleted": len(chunk_ids),
     }

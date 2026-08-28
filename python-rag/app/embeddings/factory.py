@@ -24,5 +24,7 @@ def get_embedding_provider() -> BaseEmbeddingProvider:
         logger.info("Using Mock embedding provider")
         return MockEmbeddingProvider(dimension=settings.PINECONE_DIMENSION)
     else:
+        if settings.is_production_auth:
+            raise RuntimeError(f"Embedding provider '{provider}' is not configured correctly")
         logger.info("Falling back to FastEmbed local embedding provider")
         return FastEmbedProvider(model_name=settings.EMBEDDING_MODEL)

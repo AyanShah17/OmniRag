@@ -43,15 +43,8 @@ class MockVectorStore(BaseVectorStore):
 
         scored_items = []
         for rec in records_map.values():
-            # Check metadata filters
-            if filter_metadata:
-                match = True
-                for k, v in filter_metadata.items():
-                    if rec.metadata.get(k) != v:
-                        match = False
-                        break
-                if not match:
-                    continue
+            if filter_metadata and not self._matches_filter(rec.metadata, filter_metadata):
+                continue
 
             sim = cosine_similarity(query_vector, rec.values)
             scored_items.append(VectorSearchResult(id=rec.id, score=sim, metadata=rec.metadata))
@@ -59,6 +52,37 @@ class MockVectorStore(BaseVectorStore):
         # Sort descending by score
         scored_items.sort(key=lambda x: x.score, reverse=True)
         return scored_items[:top_k]
+
+    @staticmethod
+    def _matches_filter(metadata: Dict[str, Any], filter_metadata: Dict[str, Any]) -> bool:
+        """Minimal emulation of Pinecone's metadata filter DSL, supporting exact
+        match and the subset of operators OmniRAG actually issues ($in for
+        ACL role-membership checks). Extend here if new operators are needed;
+        keep behavior in lockstep with the production PineconeVectorStore so
+        local/test runs don't silently diverge from ACL enforcement in prod.
+        """
+        for key, expected in filter_metadata.items():
+            actual = metadata.get(key)
+            # Legacy/manually-constructed records with no acl_roles metadata at
+            # all are treated as default-only visibility, matching what the
+            # embedding worker now always writes for new chunks — never as
+            # unrestricted/visible-to-everyone.
+            if key == "acl_roles" and actual is None:
+                actual = ["default"]
+            if isinstance(expected, dict) and "$in" in expected:
+                candidates = expected["$in"]
+                if isinstance(actual, (list, tuple, set)):
+                    if not any(a in candidates for a in actual):
+                        return False
+                elif actual not in candidates:
+                    return False
+            else:
+                if isinstance(actual, (list, tuple, set)):
+                    if expected not in actual:
+                        return False
+                elif actual != expected:
+                    return False
+        return True
 
     async def delete_vectors(self, namespace: str, vector_ids: List[str]) -> None:
         if namespace in self._namespaces:
