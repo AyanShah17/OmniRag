@@ -13,6 +13,8 @@ Built with a **hybrid Go + Python architecture**, OmniRAG connects directly to *
 
 See [docs/architecture.md](docs/architecture.md) for the ownership boundaries, SOLID decisions, ACID transaction model, and CIA controls.
 
+See [docs/branching.md](docs/branching.md) for the development, pre-production, and production promotion workflow.
+
 ---
 
 ## 🏛️ System Architecture Topology
