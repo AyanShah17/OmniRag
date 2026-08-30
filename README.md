@@ -7,9 +7,16 @@
 [![Pinecone](https://img.shields.io/badge/Pinecone-Serverless-000000?style=for-the-badge&logo=pinecone&logoColor=white)](https://pinecone.io)
 [![FastEmbed ONNX](https://img.shields.io/badge/FastEmbed-ONNX_%240_Cost-FF6F00?style=for-the-badge)](https://qdrant.github.io/fastembed/)
 
-**OmniRAG** is an enterprise-grade, multi-tenant Dynamic RAG SaaS platform designed for high-concurrency cloud document scanning, incremental version diffing, and grounded citation streaming. 
+**OmniRAG** is a reusable RAG capability for a larger application. It provides
+document ingestion, incremental version diffing, retrieval, reranking, and
+grounded citation streaming behind a small HTTP contract. The included UI is a
+reference client for local development and functional verification, not the
+product boundary.
 
-Built with a **hybrid Go + Python architecture**, OmniRAG connects directly to **AWS S3, Azure Blob, Supabase Storage, and Confluence Wiki**, scanning permissible directories and synchronizing documents at **near-zero cost** by diffing content at the SHA-256 chunk level.
+Built with a **hybrid Go + Python architecture**, the capability supports
+**AWS S3, Azure Blob, Supabase Storage, and Confluence Wiki** connectors. The
+larger application can use the Python API directly or replace the reference
+client while preserving the ingestion and retrieval contracts.
 
 See [docs/architecture.md](docs/architecture.md) for the ownership boundaries, SOLID decisions, ACID transaction model, and CIA controls.
 

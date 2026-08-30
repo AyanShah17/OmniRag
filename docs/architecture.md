@@ -1,4 +1,8 @@
-# OmniRAG Architecture Contract
+# OmniRAG RAG Capability Architecture
+
+This repository contains a reusable RAG capability, not the final product
+application. The API and reference client are integration surfaces for a
+larger system. Keep domain contracts stable when embedding this capability.
 
 ## Ownership
 
