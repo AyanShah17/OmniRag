@@ -45,7 +45,3 @@ omnirag.env
 .idea/
 .DS_Store
 Thumbs.db
-
-# Local agent tooling
-.agents/
-skills-lock.json
