@@ -16,6 +16,10 @@ import {
   Citation,
 } from "@/lib/api"
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
 function updateLastAssistant(
   messages: MessageItem[],
   update: Partial<MessageItem>
@@ -173,8 +177,8 @@ export function App() {
       const result = await pyApi.uploadDocument(file, workspaceId)
       setDiffResult(result)
       setIsDiffModalOpen(true)
-    } catch (err: any) {
-      alert(`Upload failed: ${err.message}`)
+    } catch (err: unknown) {
+      alert(`Upload failed: ${errorMessage(err, "Unable to upload document.")}`)
     } finally {
       setIsUploading(false)
     }
@@ -215,8 +219,8 @@ export function App() {
             const input = document.createElement("input")
             input.type = "file"
             input.accept = ".pdf,.docx,.doc,.md,.txt,.html,.csv"
-            input.onchange = (e: any) => {
-              const file = e.target.files?.[0]
+            input.onchange = (event) => {
+              const file = (event.target as HTMLInputElement).files?.[0]
               if (file) handleFileUpload(file)
             }
             input.click()

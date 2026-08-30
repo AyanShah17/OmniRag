@@ -13,6 +13,13 @@ import { Badge } from "@/components/ui/badge"
 import { goApi, ConnectorItem } from "@/lib/api"
 import { Cloud, CheckCircle, AlertCircle, RefreshCw } from "lucide-react"
 
+const CONNECTOR_DEFAULTS: Record<string, { name: string; bucket: string }> = {
+  s3: { name: "Corporate S3 Bucket", bucket: "my-company-knowledge-base" },
+  azure: { name: "Azure Blob Storage", bucket: "rag-documents-container" },
+  supabase: { name: "Supabase Storage", bucket: "knowledge-vault" },
+  confluence: { name: "Engineering Confluence Wiki", bucket: "ENG-SPACE" },
+}
+
 interface ConnectorModalProps {
   open: boolean
   onClose: () => void
@@ -39,18 +46,10 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
   const handleTabChange = (tab: string) => {
     setActiveTab(tab)
     setStatusMessage(null)
-    if (tab === "s3") {
-      setName("Corporate S3 Bucket")
-      setBucket("my-company-knowledge-base")
-    } else if (tab === "azure") {
-      setName("Azure Blob Storage")
-      setBucket("rag-documents-container")
-    } else if (tab === "supabase") {
-      setName("Supabase Storage")
-      setBucket("knowledge-vault")
-    } else if (tab === "confluence") {
-      setName("Engineering Confluence Wiki")
-      setBucket("ENG-SPACE")
+    const defaults = CONNECTOR_DEFAULTS[tab]
+    if (defaults) {
+      setName(defaults.name)
+      setBucket(defaults.bucket)
     }
   }
 
@@ -60,8 +59,8 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
     try {
       await goApi.testConnector(workspaceId, activeTab, name, buildConfig())
       setStatusMessage({ text: "Connection test succeeded! Bucket is accessible and permissions are valid.", type: "success" })
-    } catch (err: any) {
-      setStatusMessage({ text: err.message || "Failed to connect to storage provider", type: "error" })
+    } catch (err: unknown) {
+      setStatusMessage({ text: err instanceof Error ? err.message : "Failed to connect to storage provider", type: "error" })
     } finally {
       setIsTesting(false)
     }
@@ -82,8 +81,8 @@ export const ConnectorModal: React.FC<ConnectorModalProps> = ({
       })
       onConnectorSaved()
       onClose()
-    } catch (err: any) {
-      setStatusMessage({ text: err.message || "Failed to save connector", type: "error" })
+    } catch (err: unknown) {
+      setStatusMessage({ text: err instanceof Error ? err.message : "Failed to save connector", type: "error" })
     } finally {
       setIsSaving(false)
     }
