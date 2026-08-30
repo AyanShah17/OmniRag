@@ -16,6 +16,18 @@ import {
   Citation,
 } from "@/lib/api"
 
+function updateLastAssistant(
+  messages: MessageItem[],
+  update: Partial<MessageItem>
+): MessageItem[] {
+  const next = [...messages]
+  const last = next[next.length - 1]
+  if (last?.role === "assistant") {
+    next[next.length - 1] = { ...last, ...update }
+  }
+  return next
+}
+
 export function App() {
   const [workspaceId] = useState("ws_default")
   const [conversations, setConversations] = useState<ConversationItem[]>([])
@@ -26,6 +38,7 @@ export function App() {
   const [goHealth, setGoHealth] = useState("checking")
   const [isStreaming, setIsStreaming] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false)
 
   // Modals
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null)
@@ -73,10 +86,12 @@ export function App() {
   const handleNewChat = () => {
     setCurrentConvId(null)
     setMessages([])
+    setIsSidebarOpen(false)
   }
 
   const handleSelectConversation = async (id: string) => {
     setCurrentConvId(id)
+    setIsSidebarOpen(false)
     try {
       const stored = await pyApi.getConversationMessages(id, workspaceId)
       setMessages(stored.map((message) => ({
@@ -93,7 +108,7 @@ export function App() {
     if (isStreaming) return
 
     let conversationId = currentConvId
-    if (!conversationId) {
+    if (conversationId === null) {
       const title = text.trim().slice(0, 60) || "New Chat"
       const conversation = await pyApi.createConversation(title, workspaceId)
       conversationId = conversation.id
@@ -101,12 +116,8 @@ export function App() {
       await loadConversations()
     }
 
-    // 1. Add User Message
     const userMsg: MessageItem = { role: "user", content: text }
     const updatedMessages = [...messages, userMsg]
-    setMessages(updatedMessages)
-
-    // 2. Add Streaming Assistant Placeholder
     const assistantMsg: MessageItem = {
       role: "assistant",
       content: "",
@@ -130,50 +141,28 @@ export function App() {
       conversationId,
       (token) => {
         accumulatedContent += token
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          if (last && last.role === "assistant") {
-            last.content = accumulatedContent
-            last.isStreaming = true
-          }
-          return next
-        })
+        setMessages((prev) => updateLastAssistant(prev, {
+          content: accumulatedContent,
+          isStreaming: true,
+        }))
       },
       (citations) => {
         citationsCollected = citations
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          if (last && last.role === "assistant") {
-            last.citations = citationsCollected
-          }
-          return next
-        })
+        setMessages((prev) => updateLastAssistant(prev, { citations }))
       },
       () => {
         setIsStreaming(false)
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          if (last && last.role === "assistant") {
-            last.isStreaming = false
-            last.citations = citationsCollected
-          }
-          return next
-        })
+        setMessages((prev) => updateLastAssistant(prev, {
+          isStreaming: false,
+          citations: citationsCollected,
+        }))
       },
       (err) => {
         setIsStreaming(false)
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          if (last && last.role === "assistant") {
-            last.isStreaming = false
-            last.content = `Error: ${err.message || "Failed to generate response."}`
-          }
-          return next
-        })
+        setMessages((prev) => updateLastAssistant(prev, {
+          isStreaming: false,
+          content: `Error: ${err.message || "Failed to generate response."}`,
+        }))
       }
     )
   }
@@ -204,6 +193,8 @@ export function App() {
         onOpenDocuments={() => setIsDocExplorerModalOpen(true)}
         onOpenSettings={() => setIsSettingsModalOpen(true)}
         workspaceId={workspaceId}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
       />
 
       {/* Main Content Area */}
@@ -213,6 +204,7 @@ export function App() {
           goHealth={goHealth}
           onFileUpload={handleFileUpload}
           isUploading={isUploading}
+          onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
         />
 
         <ChatInterface

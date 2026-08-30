@@ -38,13 +38,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="relative w-full max-w-3xl mx-auto">
-      <div className="flex items-center gap-2 p-2 bg-card/80 border border-border/80 rounded-xl shadow-lg shadow-black/20 focus-within:border-primary/70 backdrop-blur-xl transition-all">
+    <form onSubmit={handleSubmit} className="relative mx-auto w-full max-w-3xl">
+      <div className="flex items-end gap-2 rounded-xl border border-border/80 bg-card/95 p-2 shadow-xl shadow-black/20 transition-colors focus-within:border-primary/70">
         <button
           type="button"
           onClick={onAttachClick}
           className="p-2 text-muted-foreground hover:text-foreground transition-colors rounded-lg hover:bg-secondary"
           title="Upload Document"
+          aria-label="Upload document"
         >
           <Paperclip className="w-4 h-4" />
         </button>
@@ -54,7 +55,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask anything about your connected knowledge base..."
+          placeholder="Ask about your connected knowledge base..."
+          aria-label="Message"
           rows={1}
           disabled={disabled}
           className="flex-1 bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground resize-none py-1.5 px-1 max-h-32"
@@ -70,10 +72,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         </Button>
       </div>
 
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground px-2 pt-2">
+      <div className="flex items-center justify-between gap-3 px-2 pt-2 text-[11px] text-muted-foreground">
         <span className="flex items-center gap-1">
           <Sparkles className="w-3 h-3 text-cyan-400" />
-          RAG queries automatically apply multi-tenant ACL & dynamic re-ranking
+          <span className="hidden sm:inline">Queries apply tenant ACLs and dynamic re-ranking</span>
         </span>
         <span className="font-mono text-[10px]">Enter to send</span>
       </div>

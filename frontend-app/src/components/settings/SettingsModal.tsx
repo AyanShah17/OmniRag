@@ -9,7 +9,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Sliders, Key, Cpu, Database, CheckCircle2, AlertCircle } from "lucide-react"
+import { Sliders, Key, Cpu, Database, CheckCircle2, AlertCircle, ShieldCheck } from "lucide-react"
 import { apiHeaders } from "@/lib/api"
 
 interface SettingsModalProps {
@@ -36,16 +36,58 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [configPath, setConfigPath] = useState("")
   const [isSaving, setIsSaving] = useState(false)
   const [statusMsg, setStatusMsg] = useState<{ text: string; type: "success" | "error" } | null>(null)
+  const [licenseKey, setLicenseKey] = useState(() => localStorage.getItem("omnirag_license_key") || "")
+  const [licenseActive, setLicenseActive] = useState(false)
+  const [licenseRequired, setLicenseRequired] = useState(false)
+  const [isActivating, setIsActivating] = useState(false)
 
   useEffect(() => {
     if (open) {
+      loadLicense()
       loadSettings()
     }
   }, [open])
 
+  const pythonPath = window.location.port === "3000" ? "/api/py" : "/api/v1"
+
+  const loadLicense = async () => {
+    try {
+      const res = await fetch(`${pythonPath}/auth/license`, { headers: apiHeaders(workspaceId) })
+      if (res.ok) {
+        const data = await res.json()
+        setLicenseRequired(Boolean(data.license_required))
+        setLicenseActive(Boolean(data.active))
+      }
+    } catch {
+      setLicenseActive(false)
+    }
+  }
+
+  const activateLicense = async () => {
+    if (!licenseKey.trim()) return
+    setIsActivating(true)
+    try {
+      const res = await fetch(`${pythonPath}/auth/license`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ license_key: licenseKey.trim() }),
+      })
+      const result = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(result.detail || "License activation failed")
+      localStorage.setItem("omnirag_license_key", licenseKey.trim())
+      setLicenseActive(true)
+      setStatusMsg({ text: "License activated on this device.", type: "success" })
+    } catch (err: any) {
+      setLicenseActive(false)
+      setStatusMsg({ text: err.message || "License activation failed", type: "error" })
+    } finally {
+      setIsActivating(false)
+    }
+  }
+
   const loadSettings = async () => {
     try {
-      const res = await fetch("/api/v1/settings", {
+      const res = await fetch(`${pythonPath}/settings`, {
         headers: apiHeaders(workspaceId),
       })
       if (res.ok) {
@@ -71,7 +113,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setStatusMsg(null)
 
     try {
-      const res = await fetch("/api/v1/settings", {
+      const res = await fetch(`${pythonPath}/settings`, {
         method: "POST",
         headers: apiHeaders(workspaceId, true),
         body: JSON.stringify({
@@ -117,6 +159,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </DialogHeader>
 
         <form onSubmit={handleSave} className="space-y-4 my-1">
+          <section className="rounded-md border border-border bg-background p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-foreground" />
+                <div>
+                  <p className="text-xs font-semibold text-foreground">Product license</p>
+                  <p className="text-[11px] text-muted-foreground">Required for licensed deployments.</p>
+                </div>
+              </div>
+              <Badge variant={licenseActive ? "success" : licenseRequired ? "warning" : "outline"} className="text-[9px]">
+                {licenseActive ? "ACTIVE" : licenseRequired ? "REQUIRED" : "OPTIONAL"}
+              </Badge>
+            </div>
+            <div className="flex gap-2">
+              <Input type="password" value={licenseKey} onChange={(e) => setLicenseKey(e.target.value)} placeholder="Enter license key" className="h-8 text-xs font-mono" aria-label="OmniRAG license key" />
+              <Button type="button" variant="outline" size="sm" onClick={activateLicense} disabled={isActivating || !licenseKey.trim()} className="h-8 shrink-0 text-xs">
+                {isActivating ? "Checking" : "Activate"}
+              </Button>
+            </div>
+          </section>
           {/* Provider Selectors */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">

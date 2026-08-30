@@ -11,6 +11,8 @@ export function apiHeaders(workspaceId?: string, includeJson = false): HeadersIn
   if (includeJson) headers["Content-Type"] = "application/json"
   const token = typeof window !== "undefined" ? window.localStorage.getItem("omnirag_access_token") : null
   if (token) headers.Authorization = `Bearer ${token}`
+  const license = typeof window !== "undefined" ? window.localStorage.getItem("omnirag_license_key") : null
+  if (license) headers["X-OmniRAG-License"] = license
   return headers
 }
 

@@ -17,12 +17,20 @@ interface MessageBubbleProps {
 export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
   const isUser = message.role === "user"
 
+  const escapeHtml = (value: string) =>
+    value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#039;")
+
   // Simple clean markdown parser for bold, italic, code blocks, lists
   const renderFormattedContent = (text: string) => {
     const lines = text.split("\n")
     return lines.map((line, i) => {
       // Bold tags
-      let parsed = line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      let parsed = escapeHtml(line).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       // Italic tags
       parsed = parsed.replace(/\*(.*?)\*/g, '<em>$1</em>')
       // Inline code
@@ -64,7 +72,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
         <div className="space-y-1">
           {renderFormattedContent(message.content)}
           {message.isStreaming && (
-            <span className="inline-block w-1.5 h-3.5 bg-cyan-400 animate-pulse ml-0.5 align-middle" />
+            <span className="inline-block w-1.5 h-3.5 bg-primary animate-pulse ml-0.5 align-middle" aria-label="Assistant is typing" />
           )}
         </div>
 

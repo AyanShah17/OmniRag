@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from app.core.config import settings
+from app.core.license import is_license_valid, require_valid_license
 
 logger = logging.getLogger("omnirag.auth.clerk")
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -34,6 +35,26 @@ class UserSession(BaseModel):
     workspace_id: str
     roles: list[str] = Field(default_factory=lambda: ["default"])
     email: Optional[str] = None
+
+
+class LicenseRequest(BaseModel):
+    license_key: str = Field(min_length=1, max_length=256)
+
+
+@router.post("/license")
+async def activate_license(req: LicenseRequest):
+    valid = is_license_valid(req.license_key)
+    if settings.LICENSE_REQUIRED and not valid:
+        raise HTTPException(status_code=403, detail="Invalid OmniRAG license key.")
+    return {"status": "active", "license_required": settings.LICENSE_REQUIRED}
+
+
+@router.get("/license")
+async def license_status(x_omnirag_license: Optional[str] = Header(default=None)):
+    return {
+        "license_required": settings.LICENSE_REQUIRED,
+        "active": is_license_valid(x_omnirag_license),
+    }
 
 
 class TokenResponse(BaseModel):
@@ -93,6 +114,7 @@ def _dev_fallback_session(x_workspace_id: Optional[str]) -> UserSession:
 async def get_current_user(
     auth: Optional[HTTPAuthorizationCredentials] = Security(security_bearer),
     x_workspace_id: Optional[str] = Header(default=None),
+    x_omnirag_license: Optional[str] = Header(default=None),
 ) -> UserSession:
     """Dependency that extracts the authenticated Clerk user session and workspace.
 
@@ -101,6 +123,7 @@ async def get_current_user(
     unauthenticated request is granted a fixed local dev/admin identity for
     convenience, matching prior local/test behavior.
     """
+    await require_valid_license(x_omnirag_license)
     if settings.is_production_auth:
         if not auth or not auth.credentials:
             raise HTTPException(status_code=401, detail="Missing bearer token")

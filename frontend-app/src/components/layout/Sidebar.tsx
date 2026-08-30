@@ -1,5 +1,5 @@
 import React from "react"
-import { Plus, MessageSquare, Database, HardDrive, Settings, RefreshCw, Layers } from "lucide-react"
+import { Plus, MessageSquare, Database, Settings, Layers, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ConnectorItem, ConversationItem } from "@/lib/api"
@@ -14,6 +14,8 @@ interface SidebarProps {
   onOpenDocuments: () => void
   onOpenSettings: () => void
   workspaceId: string
+  isOpen: boolean
+  onClose: () => void
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -26,18 +28,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenDocuments,
   onOpenSettings,
   workspaceId,
+  isOpen,
+  onClose,
 }) => {
   return (
-    <aside className="w-72 bg-card/60 border-r border-border/60 flex flex-col h-full p-4 gap-4 backdrop-blur-xl shrink-0">
+    <>
+    {isOpen && <button type="button" className="fixed inset-0 z-30 bg-black/60 md:hidden" onClick={onClose} aria-label="Close navigation" />}
+    <aside className={`fixed inset-y-0 left-0 z-40 flex w-[286px] flex-col gap-4 border-r border-border/70 bg-card p-4 backdrop-blur-xl transition-transform duration-200 md:relative md:z-auto md:w-72 md:translate-x-0 ${isOpen ? "translate-x-0" : "-translate-x-full"}`}>
+      <div className="flex items-center justify-between md:hidden">
+        <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Navigation</span>
+        <button type="button" onClick={onClose} className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="Close navigation" title="Close navigation"><X className="h-4 w-4" /></button>
+      </div>
       {/* Brand */}
       <div className="flex items-center gap-3 px-2 py-1">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white shadow-lg shadow-blue-500/20">
+        <div className="w-8 h-8 rounded-md border border-primary/30 bg-primary/15 flex items-center justify-center text-primary">
           <Layers className="w-4 h-4" />
         </div>
         <div className="flex flex-col">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-sm tracking-tight text-foreground">OmniRAG</span>
-            <Badge variant="info" className="text-[9px] px-1.5 py-0">SaaS</Badge>
+            <Badge variant="outline" className="text-[9px] px-1.5 py-0">WORKSPACE</Badge>
           </div>
           <span className="text-[11px] text-muted-foreground font-mono truncate max-w-[140px]">{workspaceId}</span>
         </div>
@@ -54,7 +64,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </Button>
 
       {/* Conversations Section */}
-      <div className="flex-1 overflow-y-auto flex flex-col gap-1 pr-1">
+      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1 pr-1">
         <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider px-2 mb-1">
           Recent Chats
         </div>
@@ -138,7 +148,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Footer Profile */}
       <div className="border-t border-border/40 pt-3 flex items-center gap-2.5 px-2">
-        <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-[10px] font-bold text-white">
+        <div className="w-7 h-7 rounded-md border border-primary/30 bg-primary/10 flex items-center justify-center text-[10px] font-bold text-primary">
           EA
         </div>
         <div className="flex flex-col truncate">
@@ -149,5 +159,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
     </aside>
+    </>
   )
 }

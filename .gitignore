@@ -36,6 +36,7 @@ htmlcov/
 
 # Environment files
 .env
+.env.local
 omnirag.env
 !*.env.example
 
@@ -44,3 +45,7 @@ omnirag.env
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local agent tooling
+.agents/
+skills-lock.json

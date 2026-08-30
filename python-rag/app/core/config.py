@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # These endpoints are never meant to be reachable by end users, so they use
     # a static shared secret rather than a per-user Clerk session.
     INTERNAL_SERVICE_SECRET: Optional[str] = None
+    LICENSE_REQUIRED: bool = False
+    OMNIRAG_LICENSE_KEY: Optional[str] = None
 
     @property
     def is_production_auth(self) -> bool:
