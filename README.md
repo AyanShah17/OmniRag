@@ -15,6 +15,8 @@ See [docs/architecture.md](docs/architecture.md) for the ownership boundaries, S
 
 See [docs/branching.md](docs/branching.md) for the development, pre-production, and production promotion workflow.
 
+See [docs/circleci.md](docs/circleci.md) for the CircleCI and GitHub setup, branch gates, and deployment contexts.
+
 ---
 
 ## 🏛️ System Architecture Topology

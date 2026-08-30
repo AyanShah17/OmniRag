@@ -1,0 +1,113 @@
+version: 2.1
+
+jobs:
+  quality:
+    machine:
+      image: ubuntu-2204:current
+    environment:
+      AUTH_MODE: development
+      DATABASE_URL: sqlite+aiosqlite:///./circleci.db
+      EMBEDDING_PROVIDER: mock
+      VECTOR_STORE_PROVIDER: mock
+      LLM_PROVIDER: mock
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-python-{{ checksum "python-rag/requirements-dev.txt" }}
+            - v1-node-{{ checksum "frontend-app/package-lock.json" }}
+            - v1-python-
+      - run:
+          name: Install system tools
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y curl ca-certificates python3 python3-venv python3-pip xz-utils
+            curl -fsSL https://go.dev/dl/go1.22.12.linux-amd64.tar.gz | sudo tar -C /usr/local -xzf -
+            echo 'export PATH=/usr/local/go/bin:$PATH' >> "$BASH_ENV"
+            curl -fsSL https://nodejs.org/dist/v20.19.4/node-v20.19.4-linux-x64.tar.xz | sudo tar -C /opt -xJf -
+            echo 'export PATH=/opt/node-v20.19.4-linux-x64/bin:$PATH' >> "$BASH_ENV"
+            source "$BASH_ENV"
+            go version
+            node --version
+            npm --version
+      - run:
+          name: Install Python dependencies
+          command: |
+            python3 -m venv python-rag/.venv
+            python-rag/.venv/bin/python -m pip install --upgrade pip
+            python-rag/.venv/bin/pip install -r python-rag/requirements-dev.txt
+      - run:
+          name: Run Python tests
+          command: python-rag/.venv/bin/python -m pytest -q python-rag/tests
+      - run:
+          name: Run Go tests and vet
+          command: |
+            cd go-engine
+            go test ./...
+            go vet ./...
+            go build -o /tmp/omnirag-go-engine ./cmd/server
+      - run:
+          name: Build frontend
+          command: |
+            cd frontend-app
+            npm ci
+            npm run build
+      - save_cache:
+          key: v1-python-{{ checksum "python-rag/requirements-dev.txt" }}
+          paths:
+            - ~/.cache/pip
+      - save_cache:
+          key: v1-node-{{ checksum "frontend-app/package-lock.json" }}
+          paths:
+            - frontend-app/node_modules
+
+  deploy_pre_prod:
+    machine:
+      image: ubuntu-2204:current
+    steps:
+      - checkout
+      - run:
+          name: Deploy approved pre-production candidate
+          command: bash scripts/circleci/deploy.sh pre-prod
+
+  deploy_prod:
+    machine:
+      image: ubuntu-2204:current
+    steps:
+      - checkout
+      - run:
+          name: Deploy approved production prototype
+          command: bash scripts/circleci/deploy.sh prod
+
+workflows:
+  validate:
+    jobs:
+      - quality
+      - pre_prod_approval:
+          type: approval
+          requires:
+            - quality
+          filters:
+            branches:
+              only: pre-prod
+      - deploy_pre_prod:
+          requires:
+            - pre_prod_approval
+          context: pre-prod-deploy
+          filters:
+            branches:
+              only: pre-prod
+      - prod_approval:
+          type: approval
+          requires:
+            - quality
+          filters:
+            branches:
+              only: prod
+      - deploy_prod:
+          requires:
+            - prod_approval
+          context: prod-deploy
+          filters:
+            branches:
+              only: prod
