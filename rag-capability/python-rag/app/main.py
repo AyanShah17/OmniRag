@@ -32,8 +32,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="OmniRAG - Dynamic Multi-Tenant Enterprise RAG API",
-    description="Intelligent Dynamic RAG platform with chunk-level diffing, multi-cloud connectors, and streaming citations.",
+    title="OmniRAG RAG Capability API",
+    description="Backend RAG functionality for ingestion, retrieval, and grounded streaming responses.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -65,39 +65,14 @@ async def security_headers(request: Request, call_next):
 
 app.include_router(api_v1_router)
 
-import os
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-
-react_dist_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend-app/dist"))
-frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend"))
-
-if os.path.exists(react_dist_path):
-    assets_path = os.path.join(react_dist_path, "assets")
-    if os.path.exists(assets_path):
-        app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
-
-    @app.get("/")
-    async def serve_react_app():
-        index_file = os.path.join(react_dist_path, "index.html")
-        return FileResponse(index_file)
-
-elif os.path.exists(frontend_path):
-    app.mount("/static", StaticFiles(directory=frontend_path), name="static")
-
-    @app.get("/")
-    async def serve_frontend():
-        index_file = os.path.join(frontend_path, "index.html")
-        return FileResponse(index_file)
-else:
-    @app.get("/")
-    async def root():
-        return {
-            "service": "OmniRAG Enterprise AI Platform",
-            "documentation": "/docs",
-            "health": "/api/v1/healthz",
-            "version": "1.0.0",
-        }
+@app.get("/")
+async def root():
+    return {
+        "service": "OmniRAG RAG Capability",
+        "documentation": "/docs",
+        "health": "/api/v1/healthz",
+        "version": "1.0.0",
+    }
 
 
 if __name__ == "__main__":

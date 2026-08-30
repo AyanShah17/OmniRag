@@ -1,13 +1,13 @@
 # OmniRAG RAG Capability Architecture
 
-This repository contains a reusable RAG capability, not the final product
-application. The API and reference client are integration surfaces for a
-larger system. Keep domain contracts stable when embedding this capability.
+This repository contains a reusable backend RAG capability, not the final
+product application. The Python API and internal Go ingestion endpoint are
+the integration surfaces for a larger system. Keep domain contracts stable
+when embedding this capability.
 
 ## Ownership
 
 ```text
-frontend-app/              React client and user workflows
 python-rag/app/api/        HTTP adapters, validation, authentication
 python-rag/app/services/   Domain orchestration and transaction boundaries
 python-rag/app/parsers/    Document parsing ports and implementations
